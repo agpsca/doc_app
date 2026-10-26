@@ -1,0 +1,22 @@
+[project]
+name = "doc-app"
+version = "0.1.0"
+description = "Gerador de documentação em PDF a partir de uma DSL de blocos, reutilizável entre projetos"
+readme = "README.md"
+authors = [
+    { name = "agpsca", email = "denisariottijr@icloud.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "fpdf2>=2.8.9",
+    "mcp>=2.3,<3",
+    "pyyaml>=6.0.3",
+]
+
+[project.scripts]
+doc-app = "doc_app.cli:main"
+doc-app-mcp = "doc_app.mcp_server:main"
+
+[build-system]
+requires = ["uv_build>=0.13.5,<0.14.0"]
+build-backend = "uv_build"

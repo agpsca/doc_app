@@ -1,0 +1,37 @@
+#!/usr/bin/env sh
+# Atalho de execução do doc_app.
+#
+# Funciona de qualquer diretório: resolve a raiz do repositório a partir da
+# localização deste próprio script e delega para a CLI via uv. Como está
+# versionado no repo, qualquer pessoa que o clonar tem o comando pronto.
+#
+# Uso:
+#   ./bin/doc_app                       # abre o painel interativo
+#   ./bin/doc_app build <app> --type full
+#   ./bin/doc_app clean
+#   ./bin/doc_app list
+#
+# Opcional: coloque este diretório no PATH para chamar só `doc_app`:
+#   export PATH="$PATH:/caminho/para/doc_app/bin"
+
+set -eu
+
+# Diretório deste script, seguindo symlinks.
+SCRIPT_PATH="$0"
+while [ -h "$SCRIPT_PATH" ]; do
+    DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+    SCRIPT_PATH="$(readlink "$SCRIPT_PATH")"
+    case "$SCRIPT_PATH" in
+        /*) ;;
+        *) SCRIPT_PATH="$DIR/$SCRIPT_PATH" ;;
+    esac
+done
+BIN_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+REPO_ROOT="$(cd -P "$BIN_DIR/.." && pwd)"
+
+if ! command -v uv >/dev/null 2>&1; then
+    echo "doc_app: 'uv' não encontrado no PATH. Instale em https://docs.astral.sh/uv/" >&2
+    exit 1
+fi
+
+exec uv run --project "$REPO_ROOT" doc-app "$@"
