@@ -15,18 +15,28 @@ Tipos suportados:
     table        -> content: {header, rows, widths?}
     spacer       -> content: float              (espaço vertical em mm)
 
+Blocos de identidade visual, desenhados no tipo "slides" (no documento em A4
+viram imagem, tabela ou parágrafo equivalentes):
+    logo         -> content: {path, caption?}            (asset da marca)
+    clearspace   -> content: {path, ratio?, caption?}    (área de proteção)
+    swatches     -> content: {items: [{name, hex, source?}]}
+    specimen     -> content: {font, role?, weights?, sample?, source?}
+
 O formato interno canônico é uma lista de `Block`. O `loader` converte YAML
 (e a lista de tuplas legada) para esses blocos.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
 BLOCK_TYPES = {
     "h1", "h2", "h3", "p", "bullet", "num",
     "code", "callout", "kv", "table", "spacer",
+    # blocos de identidade visual (usados pelo tipo "slides")
+    "logo", "swatches", "clearspace", "specimen",
 }
 
 
@@ -87,10 +97,60 @@ def validate_block(item: Any, where: str = "bloco") -> list[str]:
             errors.append(f'{where} (kv): use [{{"key": "...", "value": "..."}}, ...].')
     elif typ == "table":
         errors += _validate_table(content, where)
+    elif typ == "logo":
+        errors += _validate_logo(content, where)
+    elif typ == "clearspace":
+        errors += _validate_logo(content, where, kind="clearspace")
+    elif typ == "swatches":
+        errors += _validate_swatches(content, where)
+    elif typ == "specimen":
+        if not (isinstance(content, dict) and isinstance(content.get("font"), str)
+                and content["font"].strip()):
+            errors.append(f'{where} (specimen): use {{"font": "Space Grotesk", '
+                          '"role": "sans", "weights": "400, 500", '
+                          '"sample": "texto de amostra", "source": "arquivo"}}.')
     elif typ == "spacer":
         if not isinstance(content, (int, float)) or not 0 < content <= 50:
             errors.append(f"{where} (spacer): use um número de 1 a 50 (mm).")
     return errors
+
+
+def _validate_logo(spec: Any, where: str, kind: str = "logo") -> list[str]:
+    extra = ', "ratio": 0.5' if kind == "clearspace" else ""
+    fmt = f'{{"path": "public/logo.svg", "caption": "..."{extra}}}'
+    if not (isinstance(spec, dict) and isinstance(spec.get("path"), str)
+            and spec["path"].strip()):
+        return [f"{where} ({kind}): 'path' deve ser o caminho da imagem "
+                f"(SVG ou PNG), relativo à pasta do app. Formato: {fmt}."]
+    errors = []
+    ratio = spec.get("ratio")
+    if ratio is not None and not (isinstance(ratio, (int, float)) and 0 < ratio <= 2):
+        errors.append(f"{where} ({kind}): 'ratio' é a fração da altura do símbolo "
+                      "usada como respiro; use um número entre 0 e 2 (ex.: 0.5).")
+    on = spec.get("on")
+    if on is not None and on not in ("light", "dark", "both"):
+        errors.append(f"{where} ({kind}): 'on' indica o fundo da amostra; use "
+                      '"light", "dark" ou "both".')
+    if spec.get("path_dark") is not None and not isinstance(spec["path_dark"], str):
+        errors.append(f"{where} ({kind}): 'path_dark' é o caminho da versão para "
+                      "fundo escuro.")
+    return errors
+
+
+def _validate_swatches(spec: Any, where: str) -> list[str]:
+    fmt = ('{"items": [{"name": "brand-green", "hex": "#00664E", '
+           '"source": "globals.css"}]}')
+    items = spec.get("items") if isinstance(spec, dict) else None
+    if not isinstance(items, list) or not items:
+        return [f"{where} (swatches): 'items' deve ser uma lista não vazia. "
+                f"Formato: {fmt}."]
+    for i, item in enumerate(items):
+        if not (isinstance(item, dict) and isinstance(item.get("name"), str)
+                and isinstance(item.get("hex"), str)
+                and re.fullmatch(r"#[0-9a-fA-F]{6}", item["hex"].strip())):
+            return [f"{where} (swatches): item {i} precisa de 'name' e 'hex' "
+                    f"em #RRGGBB. Formato: {fmt}."]
+    return []
 
 
 def _validate_table(spec: Any, where: str) -> list[str]:
@@ -115,7 +175,8 @@ def _validate_table(spec: Any, where: str) -> list[str]:
                 or not all(isinstance(w, (int, float)) and w > 0 for w in widths)):
             errors.append(f"{where} (table): 'widths' deve ter {len(header)} números "
                           "positivos (mm).")
-        elif sum(widths) > 171:
+        elif sum(widths) > 291:
             errors.append(f"{where} (table): a soma de 'widths' é {sum(widths)} mm; "
-                          "a largura útil da página é 170 mm.")
+                          "a largura útil é 170 mm no documento A4 e 290 mm no "
+                          "slide. Sem 'widths', as colunas ficam iguais.")
     return errors

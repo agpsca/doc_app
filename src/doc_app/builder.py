@@ -89,5 +89,13 @@ def _render_block(renderer: Renderer, block: Block, index: int,
         renderer.kv_block([(p["key"], p["value"]) for p in content])
     elif typ == "table":
         renderer.table_block(content)
+    elif typ == "logo":
+        renderer.image_block(content)
+    elif typ == "clearspace":
+        renderer.image_block(content, clearspace=True)
+    elif typ == "swatches":
+        renderer.swatch_table(content)
+    elif typ == "specimen":
+        renderer.specimen_lines(content)
     elif typ == "spacer":
         renderer.pdf.ln(content)

@@ -30,7 +30,8 @@ Fluxo recomendado:
 1. inspect_app(app_path): fatos do app e documentos já existentes.
 2. create_doc(app_path, doc_type): cria o documento inicial com os fatos
    extraídos dos arquivos. Tipos: brand (uso e regras), development (código),
-   full (os dois). Se já existir, é reaproveitado.
+   full (os dois), slides (guia de identidade visual, apresentação 16:9).
+   Se já existir, é reaproveitado.
 3. list_sections(app_path, doc_type): seções e quantos trechos (TODO) cada uma
    tem, com uma dica de onde procurar a informação.
 4. Para cada seção com TODO: read_section, leia os arquivos do app com as suas
@@ -47,7 +48,8 @@ Regras de conteúdo:
 - Se não der para confirmar algo, mantenha um trecho "(TODO) ..." explicando o
   que falta, em vez de inventar.
 - Não apague fatos que já estão no documento (tabelas de scripts, dependências,
-  variáveis, árvore de pastas) a não ser que estejam errados.
+  variáveis, árvore de pastas, rotas, módulos) nem a prosa aproveitada do
+  README, a não ser que estejam errados. Complete os trechos "(TODO)".
 - Não copie segredos: valores de .env, tokens, senhas, chaves.
 
 Formato dos blocos (cada bloco é um objeto de uma única chave):
@@ -58,8 +60,37 @@ Formato dos blocos (cada bloco é um objeto de uma única chave):
   {"callout": {"title": "Regra", "text": "..."}}
   {"kv": [{"key": "NOME", "value": "descrição"}]}
   {"table": {"header": ["A", "B"], "rows": [["a1", "b1"]], "widths": [50, 120]}}
-h1/h2 não vão dentro de blocos: são os títulos das seções. A largura útil da
-página é 170 mm (soma de widths).
+h1/h2 não vão dentro de blocos: são os títulos das seções. A largura útil é
+170 mm no documento A4 e 290 mm no slide (soma de widths; sem widths, as
+colunas ficam iguais).
+
+Blocos de identidade visual, próprios do tipo "slides" (no A4 viram imagem,
+tabela ou texto equivalentes). Os caminhos são relativos à pasta do app:
+  {"logo": {"path": "public/logo.svg", "path_dark": "public/logo-dark.svg",
+            "on": "both", "caption": "arquivo · tamanho · formato"}}
+  {"clearspace": {"path": "public/icon.svg", "ratio": 0.5}}
+  {"swatches": {"items": [{"name": "brand-green", "hex": "#00664E",
+                           "source": "globals.css"}]}}
+  {"specimen": {"font": "Space Grotesk", "role": "sans", "weights": "400, 500",
+                "source": "src/app/layout.tsx"}}
+No tipo "slides", cada h1 é uma divisória de seção e cada h2 é um slide; o que
+não couber continua no slide seguinte. Prefira pouco texto por h2.
+
+Guia de identidade visual (doc_type "slides"), o que fazer sem o usuário pedir:
+- O `inspect_app` devolve `identity`: assets de marca com dimensões, cores com
+  o arquivo de origem, fontes declaradas, o que falta e `ui_copy` — os arquivos
+  com mais texto de interface, com frases de amostra.
+- Posicionamento e tom de voz saem desses textos, não de documento de marca:
+  leia os arquivos de `ui_copy` inteiros (rótulos, mensagens de erro, estados
+  vazios, e-mails) e descreva como o produto fala, citando duas ou três frases
+  reais do código, com arquivo.
+- Para cada seção com (TODO), o `list_sections` traz uma dica do que procurar
+  naquele repositório. Siga a dica, abra os arquivos e escreva.
+- Afirme só o que o arquivo mostra. Regra de construção de logo, promessa de
+  marca e proibição de uso que o repositório não contenha continuam (TODO);
+  prefira registrar "não há arquivo que defina isso" a inventar.
+- Não substitua os blocos logo, clearspace, swatches e specimen por texto: eles
+  são o desenho do guia. Acrescente parágrafos ao lado deles.
 """
 
 server = MCPServer(name="doc-app", title="doc_app",
@@ -98,24 +129,47 @@ def _summary(s: sections.Section) -> dict:
 def inspect_app(app_path: str) -> dict:
     """Fatos do app (stack, tipo, o que foi encontrado) e documentos já no cache."""
     from .extract import extract_facts
+    from .identity import detect_identity
     app = core.app_dir(app_path)
     f = extract_facts(app)
     existing = {t: str(core.doc_path(app.name, t)) for t in DOC_TYPES
                 if core.doc_path(app.name, t).exists()}
+    ident = detect_identity(app)
+    identity = {
+        "title": ident.title,
+        "description": ident.description,
+        "lang": ident.lang,
+        "assets": [{"path": a.path, "role": a.role, "format": a.format,
+                    "size": a.size} for a in ident.assets[:12]],
+        "brand_colors": [{"name": c.name, "hex": c.hex, "source": c.source}
+                         for c in ident.brand_colors],
+        "fonts": [{"name": x.name, "role": x.role, "source": x.source}
+                  for x in ident.fonts],
+        "ui_copy": [{"path": c.path, "strings": c.strings, "samples": c.samples}
+                    for c in ident.ui_copy],
+        "missing": ident.missing,
+    } if not ident.empty else {}
     return {
         "app": app.name,
         "path": str(app),
         "kind": f.stack.kind,
         "stack": f.stack.summary(),
         "readme_intro": f.readme_intro,
+        "readme_sections": [s.title for s in f.readme_sections if s.title],
         "scripts": len(f.scripts),
         "dependencies": len(f.dependencies) + len(f.dev_dependencies),
         "env_vars": [v.key for v in f.env_vars],
         "top_dirs": [d for d, _ in f.top_dirs],
+        "modules": [m.name for m in f.modules],
+        "route_groups": [{"label": g.label, "base": g.base, "kind": g.kind,
+                          "source": g.source, "ops": len(g.ops)} for g in f.routes],
+        "test_files": dict(f.test_files),
+        "code_todos": f.code_todos,
         "git_hooks": [h for h, _ in f.hooks],
         "ci_workflows": [w.name for w in f.workflows],
         "docker": f.docker is not None,
         "warnings": f.warnings,
+        "identity": identity,
         "docs_in_cache": existing,
         "doc_types": list(DOC_TYPES),
     }
@@ -207,15 +261,18 @@ def remove_section(app_path: str, section_id: str, doc_type: str = "full") -> di
 
 @tool
 def build_pdf(app_path: str, doc_type: str = "full", output_path: str | None = None,
-              mark: str | None = None) -> dict:
-    """Gera o PDF. Sem output_path, salva em ~/Desktop/<app>-<tipo>.pdf.
+              mark: str | None = None, fmt: str = "pdf") -> dict:
+    """Gera o documento. `fmt` escolhe o formato: "pdf" (padrão), "docx"
+    (Word) ou "pptx" (PowerPoint, para o tipo slides). Sem output_path, salva
+    em ~/Desktop/<app>-<tipo>.<fmt>.
     `mark` (ex.: "Uso interno") adiciona marca d'água e aviso de restrição."""
     app, _ = _ctx(app_path, doc_type)
-    out = (core.normalize_output(output_path, app.name, doc_type) if output_path
-           else core.default_output(app.name, doc_type))
-    res = core.build(app.name, doc_type, out, mark)
+    core.check_format(fmt)
+    out = (core.normalize_output(output_path, app.name, doc_type, fmt) if output_path
+           else core.default_output(app.name, doc_type, fmt))
+    res = core.build(app.name, doc_type, out, mark, fmt)
     raw = sections.load_raw(core.doc_path(app.name, doc_type))
-    return {"pdf": str(res.output), "blocks": res.blocks,
+    return {"output": str(res.output), "format": fmt, "blocks": res.blocks,
             "todos_left": sum(s.todos for s in sections.list_sections(raw))}
 
 

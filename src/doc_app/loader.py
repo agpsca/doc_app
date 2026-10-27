@@ -92,9 +92,11 @@ def load_document(path: str | Path,
         )
     blocks = _parse_blocks(raw["blocks"])
     theme = _parse_theme(raw.get("theme"), base=DOC_TYPES[doc_type])
+    if raw.get("app_path"):
+        theme = dataclasses.replace(theme, assets_root=str(raw["app_path"]))
     # Backend não tem identidade visual própria: sempre usa a paleta do doc_app,
     # mesmo que o YAML peça outra.
-    if raw.get("app_kind") == "backend":
+    if raw.get("app_kind") == "backend" and doc_type != "slides":
         theme = dataclasses.replace(theme, palette=Palette())
     return blocks, theme, doc_type
 
@@ -102,15 +104,19 @@ def load_document(path: str | Path,
 def save_document(path: str | Path, blocks: list[dict], doc_type: str,
                   theme_overrides: dict | None = None,
                   app_kind: str | None = None,
-                  brand_source: str | None = None) -> Path:
+                  brand_source: str | None = None,
+                  app_path: str | None = None) -> Path:
     """Escreve o YAML da documentação (esqueleto ou editado).
 
     `brand_source` registra de onde vieram as cores detectadas no app; é só
-    informativo, para quem for revisar o YAML.
+    informativo. `app_path` é a pasta do app, necessária para o guia de
+    identidade achar os arquivos de logotipo na hora de gerar o PDF.
     """
     doc: dict[str, Any] = {"type": doc_type}
     if app_kind:
         doc["app_kind"] = app_kind
+    if app_path:
+        doc["app_path"] = app_path
     if brand_source:
         doc["brand_source"] = brand_source
     if theme_overrides:

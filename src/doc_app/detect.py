@@ -61,11 +61,16 @@ def detect_stack(app_path: Path) -> StackInfo:
         has_front |= bool(deps & FRONTEND_JS)
         has_back |= bool(deps & BACKEND_JS)
 
-    if (app_path / "pyproject.toml").is_file() or list(app_path.glob("*.py")):
+    has_py = ((app_path / "pyproject.toml").is_file()
+              or (app_path / "requirements.txt").is_file()
+              or bool(list(app_path.glob("*.py"))))
+    if has_py:
         if info.language is None:
             info.language = "Python"
         if (app_path / "pyproject.toml").is_file():
             info.package_manager = info.package_manager or "pip/uv"
+        elif (app_path / "requirements.txt").is_file():
+            info.package_manager = info.package_manager or "pip"
         py_deps = _python_deps(app_path)
         found = [d for d in BACKEND_PY if d in py_deps]
         if found:

@@ -10,6 +10,7 @@ import re
 
 from fpdf import FPDF
 
+from .sections import TODO as TODO_MARK
 from .theme import Theme
 
 
@@ -17,9 +18,9 @@ class DocPDF(FPDF):
     """FPDF com cabeçalho/rodapé da marca, fontes e metadados."""
 
     def __init__(self, theme: Theme):
-        super().__init__(format="A4", unit="mm")
-        self.theme = theme
         p = theme.page
+        super().__init__(format=(p.width, p.height), unit="mm")
+        self.theme = theme
         self.set_auto_page_break(auto=True, margin=22)
         self.set_margins(p.margin, p.margin, p.margin)
         f = theme.fonts
@@ -323,7 +324,11 @@ class Renderer:
             gap = 0
 
         if anchor_id is not None and level in (1, 2, 3):
-            pdf.start_section(text, level=level - 1)
+            # O fpdf exige hierarquia contínua nos marcadores: um h3 solto
+            # (seção sem h2, caso comum quando o texto vem do README) entraria
+            # como nível 2 depois de um nível 0 e quebraria a geração.
+            last = self.pdf._outline[-1].level if self.pdf._outline else -1
+            pdf.start_section(text, level=min(level - 1, last + 1))
 
         if level == 1:
             pdf.ln(gap)
@@ -348,33 +353,92 @@ class Renderer:
             pdf.multi_cell(p.content_width, 6, text, align="L")
             pdf.ln(1.5)
 
+    @staticmethod
+    def pending(text: str) -> tuple[bool, str]:
+        """Separa a marca de pendência do texto.
+
+        O YAML guarda "(TODO) ..." porque é o que as ferramentas contam; no
+        PDF isso vira uma anotação discreta ("A DEFINIR") quando abre o
+        parágrafo, e "a definir:" quando aparece no meio de uma frase.
+        """
+        stripped = text.lstrip()
+        if stripped.startswith(TODO_MARK):
+            return True, Renderer._inline_pending(stripped[len(TODO_MARK):].lstrip())
+        return False, Renderer._inline_pending(text)
+
+    @staticmethod
+    def _inline_pending(text: str) -> str:
+        if TODO_MARK not in text:
+            return text
+        return (text.replace(f"{TODO_MARK} ", "a definir: ")
+                .replace(TODO_MARK, "a definir"))
+
     def paragraph(self, text: str, keep_with: float = 0.0):
         """Parágrafo. `keep_with` (mm) reserva espaço para o bloco seguinte
         (usado em frases de introdução, como 'Estrutura de src/:')."""
         pdf, t = self.pdf, self.theme
         typo = t.typography
+        open_item, text = self.pending(text)
+        indent = 0.0
+        if open_item:
+            indent = 6.0
+        width = t.page.content_width - indent
         pdf.set_font("DejaVu", "", typo.body_size)
         if keep_with:
-            lines = pdf.multi_cell(t.page.content_width, typo.body_leading, text,
+            lines = pdf.multi_cell(width, typo.body_leading, text,
                                    dry_run=True, output="LINES")
             own = len(lines) * typo.body_leading + 2.2
             if pdf.get_y() + own + keep_with > t.page.height - 24:
                 pdf.add_page()
+        if open_item:
+            self._pending_mark(width, text)
+            return
         pdf.set_text_color(*t.palette.ink)
-        pdf.multi_cell(t.page.content_width, typo.body_leading, text, align="L")
+        pdf.multi_cell(width, typo.body_leading, text, align="L")
         pdf.ln(2.2)
+
+    def _pending_mark(self, width: float, text: str):
+        """Anotação de pendência: filete, rótulo e o assunto, em tom de apoio."""
+        pdf, t = self.pdf, self.theme
+        p, pal, typo = t.page, t.palette, t.typography
+        x0, y0 = p.margin, pdf.get_y()
+        pdf.set_font("DejaVu", "B", max(typo.body_size - 3.0, 7.0))
+        label = "A DEFINIR"
+        label_w = pdf.get_string_width(label) + 3
+        pdf.set_xy(x0 + 6, y0)
+        pdf.set_text_color(*pal.muted)
+        pdf.cell(label_w, typo.body_leading, label)
+        pdf.set_font("DejaVu", "", typo.body_size)
+        pdf.set_xy(x0 + 6 + label_w, y0)
+        pdf.multi_cell(width - label_w, typo.body_leading, text, align="L")
+        height = max(pdf.get_y() - y0, typo.body_leading)
+        pdf.set_draw_color(*pal.rule)
+        pdf.set_line_width(1.2)
+        pdf.line(x0 + 1, y0 + 1, x0 + 1, y0 + height - 1)
+        pdf.set_xy(x0, y0 + height)
+        pdf.ln(2.4)
 
     def bullets(self, items, numbered=False):
         pdf, t = self.pdf, self.theme
-        pdf.set_text_color(*t.palette.ink)
         pdf.set_font("DejaVu", "", 10.5)
         for i, it in enumerate(items, 1):
+            open_item, it = self.pending(it)
             marker = f"{i}." if numbered else "•"
             x = pdf.get_x()
-            pdf.cell(7, 5.6, marker)
+            pdf.set_text_color(*(t.palette.muted if open_item else t.palette.ink))
+            pdf.cell(7, 5.6, "·" if open_item else marker)
             pdf.set_x(x + 7)
-            pdf.multi_cell(t.page.content_width - 7, 5.6, it, align="L")
+            if open_item:
+                pdf.set_font("DejaVu", "B", 7.5)
+                width = pdf.get_string_width("A DEFINIR") + 3
+                pdf.cell(width, 5.6, "A DEFINIR")
+                pdf.set_font("DejaVu", "", 10.5)
+                pdf.set_x(x + 7 + width)
+                pdf.multi_cell(t.page.content_width - 7 - width, 5.6, it, align="L")
+            else:
+                pdf.multi_cell(t.page.content_width - 7, 5.6, it, align="L")
             pdf.ln(0.8)
+        pdf.set_text_color(*t.palette.ink)
         pdf.ln(1.6)
 
     def code_block(self, text: str):
@@ -429,6 +493,9 @@ class Renderer:
     def callout(self, title: str, text: str):
         pdf, t = self.pdf, self.theme
         p, pal = t.page, t.palette
+        open_item, text = self.pending(text)
+        if open_item:
+            text = f"A definir: {text}"
         pdf.ln(1)
         pad = 3.5
         bar = 2.5
@@ -445,7 +512,7 @@ class Renderer:
         height = line_h * len(body_lines) + 2 * pad
 
         x0, y0 = p.margin, pdf.get_y()
-        if y0 + height > 270:
+        if y0 + height > p.height - 27:
             pdf.add_page()
             y0 = pdf.get_y()
 
@@ -480,7 +547,10 @@ class Renderer:
         pdf, t = self.pdf, self.theme
         p, pal = t.page, t.palette
         for key, val in pairs:
-            if pdf.get_y() > 252:
+            open_item, val = self.pending(val)
+            if open_item:
+                val = f"A definir: {val}"
+            if pdf.get_y() > p.height - 45:
                 pdf.add_page()
             y0 = pdf.get_y()
             # filete da cor de marca à esquerda da chave
@@ -500,8 +570,8 @@ class Renderer:
     def table_block(self, spec):
         pdf, t = self.pdf, self.theme
         p, pal = t.page, t.palette
-        header = spec["header"]
-        rows = spec["rows"]
+        header = [self._inline_pending(str(c)) for c in spec["header"]]
+        rows = [[self._inline_pending(str(c)) for c in row] for row in spec["rows"]]
         widths = spec.get("widths", [p.content_width / len(header)] * len(header))
         line_h = 5.2
 
@@ -516,7 +586,7 @@ class Renderer:
 
         def draw_row(cells, head=False, zebra=False):
             h = row_height(cells)
-            if pdf.get_y() + h > 272:
+            if pdf.get_y() + h > p.height - 25:
                 pdf.add_page()
                 draw_header()
             x = p.margin
@@ -552,3 +622,106 @@ class Renderer:
         # borda externa sutil ao redor da tabela inteira não é trivial com
         # quebra de página; mantemos as linhas inferiores por linha.
         pdf.ln(4)
+
+    # -- blocos de identidade visual (versão para o documento A4) ----------
+    #
+    # No tipo "slides" estes blocos têm desenho próprio (grade da área de
+    # proteção, amostras grandes, especimen). Aqui valem como registro: a
+    # imagem no tamanho da coluna, as cores em amostras pequenas e a fonte
+    # como texto.
+
+    def image_block(self, spec: dict, clearspace: bool = False):
+        pdf, t = self.pdf, self.theme
+        p, pal = t.page, t.palette
+        path = self._asset(spec.get("path", ""))
+        caption = spec.get("caption") or spec.get("path", "")
+        if clearspace:
+            ratio = float(spec.get("ratio") or 0.5)
+            label = "½H" if abs(ratio - 0.5) < 0.01 else f"{ratio:g} H"
+            caption = spec.get("caption") or (
+                f"Área de proteção: respiro mínimo de {label} (H é a altura do "
+                f"símbolo) nos quatro lados.")
+        pdf.ln(1)
+        drawn = False
+        if path:
+            try:
+                pdf.image(str(path), x=p.margin, y=pdf.get_y(), h=48,
+                          keep_aspect_ratio=True)
+                pdf.ln(50)
+                drawn = True
+            except (RuntimeError, ValueError):
+                drawn = False
+        if not drawn:
+            pdf.set_font("DejaVu", "", 9.5)
+            pdf.set_text_color(*pal.muted)
+            pdf.multi_cell(p.content_width, 5.4,
+                           f"[imagem não disponível: {spec.get('path', '—')}]")
+        pdf.set_font("DejaVu", "", 9)
+        pdf.set_text_color(*pal.muted)
+        pdf.multi_cell(p.content_width, 5, caption)
+        pdf.ln(2)
+
+    def _asset(self, rel: str):
+        from pathlib import Path
+        if not rel:
+            return None
+        path = Path(rel).expanduser()
+        if not path.is_absolute():
+            root = self.theme.assets_root
+            if not root:
+                return None
+            path = Path(root).expanduser() / rel
+        return path if path.is_file() else None
+
+    def swatch_table(self, spec: dict):
+        """Amostras pequenas com nome e código, em linhas de seis."""
+        pdf, t = self.pdf, self.theme
+        p, pal = t.page, t.palette
+        items = spec["items"]
+        per_row = 6
+        chip = (p.content_width - (per_row - 1) * 3) / per_row
+        pdf.ln(1)
+        for start in range(0, len(items), per_row):
+            row = items[start:start + per_row]
+            top = pdf.get_y()
+            if top + chip + 14 > p.height - 24:
+                pdf.add_page()
+                top = pdf.get_y()
+            for i, item in enumerate(row):
+                x = p.margin + i * (chip + 3)
+                h = item["hex"].strip().lstrip("#")
+                rgb = tuple(int(h[j:j + 2], 16) for j in (0, 2, 4))
+                pdf.set_fill_color(*rgb)
+                pdf.set_draw_color(*pal.rule)
+                pdf.set_line_width(0.2)
+                pdf.rect(x, top, chip, chip * 0.7, style="DF")
+                pdf.set_xy(x, top + chip * 0.7 + 1)
+                pdf.set_font("Mono", "", 7)
+                pdf.set_text_color(*pal.brand)
+                pdf.cell(chip, 3.6, item["hex"].upper())
+                pdf.set_xy(x, top + chip * 0.7 + 4.6)
+                pdf.set_font("DejaVu", "", 6.5)
+                pdf.set_text_color(*pal.muted)
+                pdf.multi_cell(chip, 3.2, item["name"].lstrip("-$@"))
+            pdf.set_y(top + chip * 0.7 + 13)
+        pdf.ln(1)
+
+    def specimen_lines(self, spec: dict):
+        pdf, t = self.pdf, self.theme
+        p, pal = t.page, t.palette
+        parts = [spec["font"]]
+        if spec.get("role"):
+            parts.append(f"papel: {spec['role']}")
+        if spec.get("weights"):
+            parts.append(f"pesos: {spec['weights']}")
+        if spec.get("source"):
+            parts.append(f"declarada em {spec['source']}")
+        pdf.set_font("DejaVu", "B", 11)
+        pdf.set_text_color(*pal.dark)
+        pdf.multi_cell(p.content_width, 6, " · ".join(parts))
+        pdf.set_font("DejaVu", "", 9)
+        pdf.set_text_color(*pal.muted)
+        pdf.multi_cell(p.content_width, 5,
+                       "O arquivo da fonte não está no repositório; o PDF usa a "
+                       "fonte do documento.")
+        pdf.ln(2)

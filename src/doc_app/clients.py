@@ -77,11 +77,21 @@ def _strip_jsonc(text: str) -> str:
 
 
 def _app_support(*parts: str) -> Path:
-    """Diretório de configuração de apps desktop (Linux: XDG; macOS: Library)."""
-    if platform.system() == "Darwin":
+    """Config de apps desktop (Windows: AppData; macOS: Library; Linux: XDG)."""
+    system = platform.system()
+    if system == "Windows":
+        base = os.environ.get("APPDATA") or str(_home() / "AppData" / "Roaming")
+        return Path(base).joinpath(*parts)
+    if system == "Darwin":
         return _home().joinpath("Library", "Application Support", *parts)
     base = os.environ.get("XDG_CONFIG_HOME") or str(_home() / ".config")
     return Path(base).joinpath(*parts)
+
+
+def _exe(name: str) -> str:
+    """Caminho completo do executável. No Windows esses CLIs são .cmd/.ps1, que
+    o subprocess só encontra com a extensão."""
+    return shutil.which(name) or name
 
 
 # --- clientes ---------------------------------------------------------------
@@ -196,7 +206,7 @@ class ClaudeCodeClient(Client):
         return shutil.which("claude") is not None
 
     def _run(self, *args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["claude", "mcp", *args], capture_output=True,
+        return subprocess.run([_exe("claude"), "mcp", *args], capture_output=True,
                               text=True, timeout=60)
 
     def status(self) -> str:
@@ -255,8 +265,8 @@ class CodexClient(Client):
         return "atual" if current.get("args") == launch()[1] else "outro"
 
     def _run(self, *args: str) -> None:
-        res = subprocess.run(["codex", "mcp", *args], capture_output=True, text=True,
-                             timeout=60)
+        res = subprocess.run([_exe("codex"), "mcp", *args], capture_output=True,
+                             text=True, timeout=60)
         if res.returncode != 0:
             raise RuntimeError(res.stderr.strip() or res.stdout.strip())
 
@@ -309,7 +319,7 @@ class VSCodeClient(JsonClient):
         command, args = launch()
         spec = json.dumps({"name": SERVER_NAME, "type": "stdio",
                            "command": command, "args": args})
-        res = subprocess.run(["code", "--add-mcp", spec], capture_output=True,
+        res = subprocess.run([_exe("code"), "--add-mcp", spec], capture_output=True,
                              text=True, timeout=60)
         if res.returncode != 0:
             raise RuntimeError(res.stderr.strip() or res.stdout.strip())

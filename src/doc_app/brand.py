@@ -58,6 +58,15 @@ BLACK: RGB = (0, 0, 0)
 
 
 @dataclass
+class CssVar:
+    """Variável de estilo declarada no app (cor ou outro token)."""
+    name: str
+    raw: str
+    source: str
+    color: RGB | None = None
+
+
+@dataclass
 class BrandColors:
     brand: RGB
     dark: RGB
@@ -80,6 +89,30 @@ class BrandColors:
             "cover_muted": mix(WHITE, d, 0.60),
         }
         return {k: to_hex(v) for k, v in colors.items()}
+
+
+def css_variables(app_path: Path) -> list[CssVar]:
+    """Variáveis declaradas nos estilos do app, na ordem dos arquivos mais
+    prováveis de definirem a marca. A primeira definição de cada nome vence.
+
+    Usada pelo guia de identidade visual: além das cores, interessam os tokens
+    de raio, espaçamento e fonte, que não são cor nenhuma.
+    """
+    out: list[CssVar] = []
+    seen: set[str] = set()
+    for css in _css_files(app_path):
+        text = _read(css)
+        if not text:
+            continue
+        rel = css.relative_to(app_path).as_posix()
+        variables = _light_variables(text)
+        for name, raw in variables.items():
+            if name in seen:
+                continue
+            seen.add(name)
+            out.append(CssVar(name=name, raw=raw, source=rel,
+                              color=_resolve(name, variables, set())))
+    return out
 
 
 def detect_brand(app_path: Path) -> BrandColors | None:

@@ -1,16 +1,20 @@
 # doc_app
 
-Gera documentação em PDF de um app a partir do próprio repositório.
+Gera documentação de um app a partir do próprio repositório, em PDF, Word ou
+PowerPoint.
 
 Você aponta o doc_app para a pasta de um projeto. Ele lê os arquivos (README,
-`package.json` ou `pyproject.toml`, `.env.example`, pastas, hooks de git, CI,
-Dockerfile e estilos) e monta um PDF com capa, sumário clicável e seções
-numeradas.
+`package.json`, `pyproject.toml` ou `requirements.txt`, `.env.example`, pastas,
+rotas declaradas no código, hooks de git, CI, Dockerfile e estilos) e monta um
+PDF com capa, sumário clicável e seções numeradas — ou um `.docx`/`.pptx` com
+os mesmos blocos, para editar no Office.
 
 O que dá para confirmar nos arquivos vem preenchido: stack, scripts,
-dependências, variáveis de ambiente, árvore de pastas, checagens de qualidade e
-Docker. O que depende de interpretação (para que serve o app, como se usa, quais
-regras de arquitetura o time segue) fica marcado com `(TODO)`. Esses trechos
+dependências, variáveis de ambiente, árvore de pastas, rotas, módulos, testes,
+checagens de qualidade e Docker. O texto do README é aproveitado seção por
+seção (uso, decisões de arquitetura, organização, qualidade, lacunas). Fica
+marcado com `(TODO)` só o que nenhum arquivo responde — o propósito do app sem
+README, a narrativa de uso, a responsabilidade de cada módulo. Esses trechos
 podem ser escritos à mão ou por um assistente de IA conectado ao doc_app.
 
 ## Sumário
@@ -35,34 +39,52 @@ podem ser escritos à mão ou por um assistente de IA conectado ao doc_app.
 
 ```
  repositório do app
-        │  doc_app lê os arquivos
+        │  doc_app lê os arquivos: configuração, código e README
         ▼
- workspace/<app>/<tipo>.yaml      ← documento editável: fatos + trechos (TODO)
+ workspace/<app>/<tipo>.yaml      ← documento editável: fatos extraídos,
+        │                            texto do README e trechos (TODO)
         │  você ou um assistente de IA completa os (TODO)
         ▼
- ~/Desktop/<app>-<tipo>.pdf       ← PDF gerado a partir do YAML
+ ~/Desktop/<app>-<tipo>.pdf       ← gerado a partir do YAML
+ ~/Desktop/<app>-<tipo>.docx         (ou .docx / .pptx, os mesmos blocos)
 ```
 
-O PDF nunca é a fonte. Toda mudança é feita no YAML, e o PDF é gerado de novo
-a partir dele. Por isso não é preciso um editor de PDF.
+O arquivo gerado nunca é a fonte. Toda mudança é feita no YAML, e o documento
+é gerado de novo a partir dele. Editar o `.docx`/`.pptx` direto funciona, mas
+a próxima geração não enxerga essa edição.
 
 ## Requisitos
 
 | Requisito | Para que serve | Como conferir |
 |---|---|---|
-| Linux (testado no Ubuntu 26.04) | O caminho das fontes é fixo em `src/doc_app/theme.py`; outros sistemas precisam ajustar esse caminho | — |
+| Linux, WSL, macOS ou Windows | Os caminhos de fontes e de configuração são resolvidos na plataforma em uso | — |
 | [uv](https://docs.astral.sh/uv/getting-started/installation/) | Instala o Python 3.14 e as dependências do projeto | `uv --version` |
-| Fontes DejaVu | Desenham o texto do PDF, com acentos | `ls /usr/share/fonts/truetype/dejavu` |
+| Fontes do PDF | Desenham o texto, com acentos | veja a tabela abaixo |
 
-Se faltarem as fontes, no Ubuntu ou Debian:
+As fontes são procuradas automaticamente, na primeira pasta que tiver o trio
+completo (regular, negrito e monoespaçada):
+
+| Plataforma | Fontes usadas | Onde |
+|---|---|---|
+| Linux, WSL | DejaVu | `/usr/share/fonts/truetype/dejavu`, `/usr/share/fonts/dejavu`, `~/.local/share/fonts` |
+| WSL sem fontes Linux | as do Windows | `/mnt/c/Windows/Fonts` |
+| Windows | Arial + Consolas (ou DejaVu, se instalada) | `%WINDIR%\Fonts` |
+| macOS | DejaVu | `~/Library/Fonts`, `/Library/Fonts` |
+
+Se faltarem as fontes DejaVu, no Ubuntu, Debian ou WSL:
 
 ```bash
 sudo apt install fonts-dejavu-core
 ```
 
+Para usar outras fontes, aponte `DOC_APP_FONT_DIR` para uma pasta com
+`DejaVuSans.ttf`, `DejaVuSans-Bold.ttf` e `DejaVuSansMono.ttf`.
+
 ## Primeiro uso, passo a passo
 
 ### 1. Instalar
+
+Em Linux, WSL ou macOS:
 
 ```bash
 git clone <repo> ~/projects/doc_app
@@ -87,6 +109,47 @@ O instalador faz cinco coisas, nesta ordem:
 |---|---|
 | `--yes` | Aceita todas as perguntas, inclusive conectar todos os assistentes encontrados |
 | `--no-mcp` | Pula a etapa dos assistentes |
+
+#### No Windows
+
+Os scripts `install.sh` e `cleanup.sh` são de shell e não rodam no PowerShell.
+No Windows, quem instala o comando é o próprio `uv`:
+
+```powershell
+git clone <repo> $HOME\projects\doc_app
+cd $HOME\projects\doc_app
+uv sync
+uv tool install --editable .     # cria os comandos doc-app e doc-app-mcp
+uv tool update-shell             # só se o comando não for encontrado; reabra o terminal
+doc-app connect                  # conecta aos assistentes de IA
+```
+
+O `--editable` faz os comandos apontarem para este repositório, como o symlink
+no Linux: `git pull` já atualiza o comando, e o cache fica em
+`<repo>\workspace`.
+
+Sem instalar nada, de dentro do repositório, também funciona:
+
+```powershell
+uv run doc-app build C:\projetos\meu-app --type full
+```
+
+No Windows, o comando chama-se `doc-app` (com hífen), e não `doc_app`. O resto
+deste README vale igual nas duas plataformas. Para desinstalar:
+`uv tool uninstall doc-app` e `uv run python -m doc_app.clients unregister all`.
+
+No WSL, use as instruções de Linux. Os caminhos podem ser colados no formato do
+Windows, como o Explorer copia: `\\wsl.localhost\Ubuntu-26.04\home\você\app`,
+`C:\projetos\app`, com ou sem as aspas do "Copiar como caminho". O doc_app
+converte com o `wslpath`, tanto para o app quanto para o destino do PDF.
+
+O PDF vai para `~/Desktop` se essa pasta existir; no WSL ela normalmente não
+existe, então o padrão passa a ser a home. Para salvar no Desktop do Windows:
+
+```bash
+doc_app build ~/projects/meu-app -t full -o /mnt/c/Users/<você>/Desktop/
+doc_app build ~/projects/meu-app -t full -o 'C:\Users\<você>\Desktop\'
+```
 
 ### 2. Gerar o primeiro PDF
 
@@ -118,11 +181,11 @@ $ doc_app
 
 📭 Ainda não há documentação 'full' para 'meu-app' no cache.
 🔎 Detectei: React 18.3.1 · JavaScript/TypeScript · pnpm · frontend
-📋 Encontrei: README, 3 scripts, 1 variáveis de ambiente, 4 dependências
+📋 Encontrei: README (8 seções), 3 scripts, 1 variáveis de ambiente, 4 dependências, 9 rota(s), 4 módulo(s)
 ✨ Criar a documentação inicial com esses dados? [S/n]:
 🎨 Cores da marca detectadas: principal #2563EB, escura #112D6A, destaque #3B73ED
 📝 Documentação criada: ~/projects/doc_app/workspace/meu-app/full.yaml
-   16 trecho(s) marcados com (TODO) para completar.
+   3 trecho(s) marcados com (TODO) para completar.
    1.  Não, documento público
    2.  Sim, "Uso interno"
    3.  Sim, com outro texto (ex.: Confidencial)
@@ -134,7 +197,7 @@ $ doc_app
    >
 
 ⏳ Gerando...
-PDF gerado (full, uso interno): ~/Desktop/meu-app-full.pdf  (48 blocos)
+PDF gerado (full, uso interno): ~/Desktop/meu-app-full.pdf  (80 blocos)
 🎉 Concluído!
 ```
 
@@ -156,6 +219,12 @@ seção), marcadores no painel lateral do leitor de PDF, cabeçalho e rodapé co
 falta.
 
 ### 4. Completar os trechos `(TODO)`
+
+O documento já chega com os fatos do repositório e com o texto do README
+distribuído pelas seções correspondentes. Sobra o que nenhum arquivo responde
+(veja [O que continua marcado com `(TODO)`](#o-que-continua-marcado-com-todo)).
+Para ver quanto falta, a linha "trecho(s) marcados com (TODO)" aparece na
+criação, e o assistente lista seção por seção com `list_sections`.
 
 Há dois caminhos, que podem ser misturados:
 
@@ -181,22 +250,57 @@ doc_app
 
 | Opção | O que faz |
 |---|---|
-| 📝 Gerar documentação de um app | Pede caminho, tipo, marca e destino, e gera o PDF. Se o YAML do app e tipo ainda não existir, oferece criá-lo |
+| 📝 Gerar documentação de um app | Pede caminho, tipo, formato, marca e destino, e gera o arquivo. Se o YAML do app e tipo ainda não existir, oferece criá-lo |
+| 📄 Criar só a fonte editável (YAML) | Pede caminho e tipo e cria só o YAML, sem gerar arquivo: é onde se escreve o texto, à mão ou com um assistente. Se já existir, mostra onde está e não recria |
 | 🔎 Ver assistentes conectados | Mostra em quais assistentes de IA o doc_app está conectado. Só lê |
 | 🔌 Conectar a assistentes de IA | Conecta o doc_app aos assistentes escolhidos |
 | 🧹 Limpar cache | Apaga os YAML de todos os apps (pede confirmação) |
 | 🚪 Sair | Fecha o painel |
 
+Cada ação volta para o menu quando termina; o painel só fecha em **Sair** (ou
+Ctrl-C).
+
 Teclas:
 
-- **Enter** aceita o valor padrão mostrado entre colchetes.
-- **0** cancela, na pergunta do caminho do app e na escolha de assistentes.
+- **Enter** aceita o valor padrão mostrado entre colchetes. Na pergunta do
+  caminho, repete o último app documentado.
+- **⬅️ Voltar**, no fim dos submenus, e **0**, na pergunta do caminho do app,
+  voltam para o menu.
+- **0** também cancela a escolha de assistentes.
 - **Ctrl-C** sai do doc_app em qualquer ponto.
 - Uma resposta inválida faz o painel perguntar de novo.
 
 O destino do PDF aceita um arquivo (`~/docs/manual.pdf`), uma pasta
-(`~/docs/`, e o PDF entra nela como `<app>-<tipo>.pdf`) ou um nome sem extensão
-(`.pdf` é acrescentado).
+(`~/docs/`, e o arquivo entra nela como `<app>-<tipo>.<formato>`) ou um nome
+sem extensão (a extensão do formato é acrescentada).
+
+### Formatos de saída
+
+O desenho é o mesmo nos três: a paleta, as fontes e as medidas vêm do tema, e
+Word e PowerPoint recebem a capa escura com faixa de destaque e selo, o
+cabeçalho e o rodapé com régua e número de página, o filete do `h1`, a caixa
+de código, o callout com barra, a tabela de cabeçalho escuro com faixa
+zebrada, as amostras de cor e a marca d'água do documento restrito.
+
+| Formato | Para que serve |
+|---|---|
+| `pdf` | Entrega. Mede o texto na geração, então as quebras são definitivas |
+| `docx` | Editar no Word, Google Docs ou LibreOffice. Títulos nos estilos `Heading 1/2/3` e sumário em campo nativo (o Word atualiza ao abrir) |
+| `pptx` | Editar no PowerPoint ou Google Slides. Capa e divisórias escuras, um slide por `h2`, slide de sumário e `(cont.)` no que transborda |
+
+O que não dá para igualar:
+
+- **Fontes.** O arquivo pede a mesma família do PDF. Se a máquina que abrir não
+  tiver essa família, o Office substitui. No Windows, gere com
+  `DOC_APP_FONT_DIR=/mnt/c/Windows/Fonts` (ou instale as fontes DejaVu) para o
+  PDF e o Office usarem a mesma fonte.
+- **Quebras.** Word e PowerPoint refluem o texto; as quebras de página e de
+  linha não caem exatamente onde o PDF mediu.
+- **SVG.** Logo e área de proteção em SVG não entram (o Office não lê SVG): no
+  lugar fica a legenda com o caminho do arquivo.
+
+No WSL, o caminho do app e o destino também aceitam o formato do Windows
+(`\\wsl.localhost\<distro>\home\...`, `C:\...`), convertidos com o `wslpath`.
 
 ## Linha de comando
 
@@ -205,14 +309,15 @@ Os mesmos recursos do painel, sem perguntas. Útil em scripts.
 ### `doc_app build` — gerar o PDF
 
 ```bash
-doc_app build <caminho-do-app> [--type TIPO] [-o DESTINO] [--internal | --mark TEXTO] [--yes]
+doc_app build <caminho-do-app> [--type TIPO] [--format FORMATO] [-o DESTINO] [--internal | --mark TEXTO] [--yes]
 ```
 
 | Opção | Efeito | Padrão |
 |---|---|---|
-| `--type`, `-t` | `brand`, `development` ou `full` | `brand` |
-| `--output`, `-o` | Arquivo ou pasta de destino | `~/Desktop/<app>-<tipo>.pdf` |
-| `--internal` | Marca o PDF como "Uso interno" | sem marca |
+| `--type`, `-t` | `brand`, `development`, `full` ou `slides` | `brand` |
+| `--format`, `-f` | `pdf`, `docx` (Word) ou `pptx` (PowerPoint) | `pdf` |
+| `--output`, `-o` | Arquivo ou pasta de destino | `~/Desktop/<app>-<tipo>.<formato>` |
+| `--internal` | Marca o documento como "Uso interno" | sem marca |
 | `--mark TEXTO` | Marca com um texto próprio | sem marca |
 | `--yes`, `-y` | Cria o YAML sem perguntar, se ainda não existir | pergunta |
 
@@ -221,6 +326,8 @@ Exemplos:
 ```bash
 doc_app build ~/projects/meu-app                        # brand, no Desktop
 doc_app build ~/projects/meu-app -t full -o ~/docs/     # completa, em ~/docs/meu-app-full.pdf
+doc_app build ~/projects/meu-app -t full -f docx        # a mesma, editável no Word
+doc_app build ~/projects/meu-app -t slides -f pptx      # deck editável no PowerPoint
 doc_app build ~/projects/api -t development --mark "Confidencial"
 ```
 
@@ -282,18 +389,76 @@ $ doc_app connections
 | Tipo | Nome no arquivo | Para quem | Seções |
 |---|---|---|---|
 | Marca e regras | `brand` | Time todo, produto, quem está chegando | Visão geral, Como começar, Como se usa, Regras e decisões de arquitetura, Qualidade e testes, Docker, Lacunas conhecidas |
-| Código | `development` | Quem vai mexer no código | Visão geral, Como começar, Organização do código, Ferramentas, Dependências, Módulos e componentes, APIs e integrações, Qualidade e testes, Docker, Inconsistências |
+| Código | `development` | Quem vai mexer no código | Visão geral, Como começar, Organização do código, Ferramentas, Dependências, Módulos e componentes, APIs e integrações, Qualidade e testes, Docker, Inconsistências (quando dois arquivos se contradizem) |
 | Completa | `full` | Os dois públicos, num PDF só | As seções dos dois tipos, sem repetir as que são comuns |
+| Identidade visual | `slides` | Marca, produto, agência, quem aplica a marca | A marca (posicionamento, tom de voz, nome), Identidade visual (assinatura, símbolo, área de proteção, cores, tipografia, forma, usos indevidos), Governança, Lacunas |
 
 Seções sem dados no repositório não aparecem. Por exemplo, "Docker" só existe
 se houver um `Dockerfile`, e "Ferramentas" só se houver arquivos de
 configuração reconhecidos.
+
+Onde cada fato do código entra:
+
+| Fato | Seção |
+|---|---|
+| Rotas e páginas | Como se usa (`brand`), APIs e integrações (`development`) |
+| Módulos e os arquivos de cada um | Módulos e componentes (`development`) |
+| Testes por pasta e o runner | Qualidade e testes |
+| `TODO`/`FIXME` do código e divergências entre arquivos | Lacunas conhecidas |
 
 Cada tipo tem seu próprio YAML no cache (`brand.yaml`, `development.yaml`,
 `full.yaml`), então editar um não muda os outros.
 
 O tipo `development` usa tipografia mais compacta e uma variação da capa (um
 filete no topo). `brand` e `full` usam a capa padrão.
+
+### Identidade visual (apresentação de slides)
+
+```bash
+doc_app build ~/projects/meu-app --type slides --internal
+```
+
+No painel, é a quarta opção da pergunta "📚 Qual o tipo de documentação?".
+
+Sai um PDF em 16:9 (33,87 × 19,05 cm), feito para projetar: capa e divisórias
+de seção sangrando na cor escura da marca, sumário clicável com o número de
+cada slide, um slide por subseção e número de slide no canto. O que não cabe
+num slide continua no seguinte, marcado "(cont.)".
+
+O que o doc_app extrai do repositório para montar o guia:
+
+| Slide | De onde vem |
+|---|---|
+| Posicionamento | a descrição declarada pelo app (metadata do `layout.tsx`, `<meta name="description">` do `index.html`, manifest, `package.json`) ou a introdução do README |
+| Nome e escrita | nome do pacote, título e template de título, idioma declarado, framework — cada linha com o arquivo de origem |
+| Assinatura | arquivo de logotipo mais largo, mostrado sobre fundo claro e sobre fundo escuro, com as variantes `on-light`/`on-dark` da mesma pasta |
+| Símbolo | arquivo quadrado (ícone), com formato e dimensões medidas |
+| Área de proteção | desenho gerado: o símbolo sobre grade de ¼H, respiro de ½H tracejado e a cota H |
+| Cores da marca | variáveis de cor com "brand", "primary" ou "accent" no nome, com o hex e o arquivo de origem; havendo um namespace de marca (`--color-brand-*`), ele manda |
+| Cores da interface | as cores semânticas (`--background`, `--muted`, `--destructive`...) |
+| Tipografia | famílias declaradas em `next/font`, Google Fonts, `@font-face`, Tailwind ou variáveis de CSS/Sass, com os pesos |
+| Forma e espaçamento | variáveis de raio, espaçamento e sombra |
+| Usos indevidos | as checagens de commit que já protegem arquivos de marca |
+| Governança | em que arquivo mora cada cor, fonte e asset; hooks e scripts de checagem |
+| Lacunas | favicon, OG image, ícone iOS ou versão vetorial que faltam |
+
+Nada disso é específico de um framework: o que não existir no repositório
+simplesmente não vira slide. Num backend sem interface, por exemplo, sai só a
+parte de nome, governança e lacunas.
+
+Fica `(TODO)` o que nenhum arquivo responde: tom de voz, público, usos
+indevidos, o respiro mínimo que o time adotou e quem aprova mudanças de marca.
+
+Três limites honestos deste guia:
+
+- **A fonte da marca não é usada no PDF.** Repositório com `next/font` não tem
+  o arquivo da fonte; o nome e os pesos entram como especificação, e a amostra
+  é desenhada com a fonte do documento.
+- **Arquivo `.ico` aparece na lista, mas não é desenhado** (o PDF não lê esse
+  formato). SVG e PNG entram, o SVG como vetor.
+- **O YAML guarda o caminho do app** (`app_path`), porque as imagens são lidas
+  na hora de gerar. Se a pasta do app mudar de lugar, ajuste essa linha; onde
+  faltar o arquivo, o slide mostra o caminho que não foi encontrado.
 
 ## Marca de uso restrito
 
@@ -383,6 +548,19 @@ Cada bloco é um item da lista `blocks` com uma única chave, o tipo do bloco.
 | `table` | Tabela | ver abaixo |
 | `spacer` | Espaço vertical, em mm | `- spacer: 6` |
 
+Blocos de identidade visual, desenhados no tipo `slides` (no PDF A4 viram
+imagem, amostras pequenas e texto):
+
+| Tipo | Uso | Exemplo |
+|---|---|---|
+| `logo` | Arquivo da marca; `on: both` mostra sobre fundo claro e escuro | `- logo: {path: public/logo.svg, on: both}` |
+| `clearspace` | Área de proteção, com grade e cota | `- clearspace: {path: public/icon.svg, ratio: 0.5}` |
+| `swatches` | Amostras de cor com nome e código | `- swatches: {items: [{name: brand-green, hex: '#00664E'}]}` |
+| `specimen` | Especificação de uma família tipográfica | `- specimen: {font: Space Grotesk, weights: '400, 500'}` |
+
+Os caminhos de `logo` e `clearspace` são relativos à pasta do app, que o YAML
+guarda em `app_path`.
+
 ```yaml
 - code: |
     pnpm install
@@ -469,6 +647,11 @@ onde cada um guarda a configuração:
 | Claude Code | configuração do próprio CLI | `claude mcp add --scope user` |
 | Codex | `~/.codex/config.toml` | `codex mcp add` |
 
+Claude Desktop e VS Code guardam a configuração em outro lugar fora do Linux:
+`%APPDATA%\Claude\` e `%APPDATA%\Code\User\` no Windows,
+`~/Library/Application Support/` no macOS. O `doc_app connections` mostra o
+caminho usado na sua máquina.
+
 O que o doc_app garante ao mexer nesses arquivos:
 
 - cria ou remove só a entrada `doc-app`; os outros servidores e configurações
@@ -499,17 +682,35 @@ uv run --project ~/projects/doc_app python -m doc_app.clients snippet
 ### Pedir a documentação
 
 Depois de conectar, recarregue o assistente (ou abra uma nova sessão) e peça no
-chat. Quanto mais específico, melhor:
+chat. O caminho do repositório é a única coisa que o assistente precisa de
+você:
 
 > Use as ferramentas do doc_app para documentar ~/projects/meu-app, tipo full.
 > Preencha todas as seções com (TODO) usando write_section, criando uma
 > subseção por módulo em "Módulos e componentes". Gere o PDF no fim, com marca
 > de uso interno.
 
+Para o guia de identidade visual:
+
+> Use o doc_app para gerar o guia de identidade visual (tipo slides) de
+> ~/projects/meu-app. Analise o repositório e preencha as seções com (TODO)
+> por conta: leia os textos da interface para escrever o tom de voz, cite os
+> arquivos de onde tirou cada afirmação e deixe (TODO) só no que o
+> repositório não responder. Gere o PDF no fim.
+
+Não é preciso dizer onde procurar: o `list_sections` devolve, para cada seção
+pendente, uma dica do que abrir naquele repositório (os arquivos de texto de
+interface para o tom de voz, os scripts de checagem para os usos indevidos, as
+rotas para os contratos), e o `inspect_app` já entrega a marca detectada e os
+arquivos com mais texto de interface.
+
 O caminho que o assistente segue:
 
 1. `inspect_app` e `create_doc`: o doc_app lê o app e cria o YAML (ou reaproveita
-   o que já existe, sem perder edições).
+   o que já existe, sem perder edições). O `inspect_app` devolve também as
+   seções do README, os grupos de rotas, os módulos, os testes, as pendências
+   do código e, no tipo `slides`, a identidade visual detectada (assets, cores,
+   fontes e os arquivos com mais texto de interface).
 2. `list_sections`: lista as seções com `(TODO)` e dá uma dica de onde procurar
    a informação para cada uma.
 3. Para cada seção, o assistente lê os arquivos do app e chama `write_section`.
@@ -519,7 +720,9 @@ O caminho que o assistente segue:
 
 O servidor envia ao assistente regras de conteúdo: escrever em português, só
 afirmar o que o código confirma, citar o arquivo de onde tirou cada regra,
-manter `(TODO)` quando não conseguir confirmar algo e nunca copiar segredos.
+manter `(TODO)` quando não conseguir confirmar algo, não apagar os fatos nem o
+texto aproveitado do README, não substituir os blocos de marca (logo, amostras
+de cor, área de proteção) por texto, e nunca copiar segredos.
 
 **O painel e o `doc_app build` não chamam o assistente.** Eles só usam o que é
 extraído dos arquivos. O enriquecimento acontece apenas quando você pede no chat
@@ -544,7 +747,7 @@ do assistente.
 | `write_section` | Substitui o corpo de uma seção (e o título, se pedido) |
 | `add_section` | Cria uma seção ou subseção; refaz a numeração |
 | `remove_section` | Remove uma seção (um `h1` leva junto as subseções); refaz a numeração |
-| `build_pdf` | Gera o PDF, com marca opcional |
+| `build_pdf` | Gera o documento (`fmt`: `pdf`, `docx` ou `pptx`), com marca opcional |
 | `block_types` | Formato dos blocos aceitos |
 
 Antes de gravar, o doc_app valida os blocos. Se algo estiver fora do formato,
@@ -568,27 +771,72 @@ que você usa é permitido para esse código.
 
 | Fonte | O que vira no documento |
 |---|---|
-| `README.md` | Introdução da visão geral, pré-requisitos e passos de instalação (blocos de código ou comandos citados no texto) |
+| `README.md` | Introdução da visão geral, pré-requisitos, passos de instalação e **o texto das demais seções**: uso, decisões de arquitetura, organização, qualidade e lacunas (veja [Seções aproveitadas do README](#seções-aproveitadas-do-readme)) |
 | `package.json` | Framework e versão, bibliotecas por categoria, scripts, dependências, gerenciador de pacotes (`packageManager` ou lockfile), regras do lint-staged |
 | `pyproject.toml` | Versão do Python, dependências, scripts, framework web |
-| `requirements.txt` | Só a detecção do framework web (as dependências dele não entram na tabela) |
+| `requirements.txt` | Framework web, dependências e bibliotecas por categoria (banco, autenticação, servidor, nuvem) |
 | `go.mod`, `Cargo.toml`, `pom.xml`, `build.gradle` | Linguagem e se é um serviço web |
-| `.env.example`, `.env.sample`, `.env.template`, `.env.dist` | Variáveis de ambiente, com a descrição tirada dos comentários e o valor de exemplo |
-| Pastas | Árvore de `src/` (ou da raiz) e tabela das pastas principais |
+| `.env.example`, `.env.sample`, `.env.template`, `.env.dist`, `example.env`, `env.example` | Variáveis de ambiente, com a descrição tirada dos comentários e o valor de exemplo |
+| Pastas | Árvore de `src/` (ou da raiz) e tabela das pastas principais, com o conteúdo de cada uma |
+| Rotas no código | O que o app **expõe** (FastAPI, Flask, Express e afins, NestJS, Spring, Laravel, Go), as **telas** que declara (App Router do Next, `<Route path>` do react-router, listas de rotas do Vue Router e do Angular) e os endpoints que apenas **consome** (clientes HTTP como axios) — cada grupo com a base, as operações e o arquivo |
+| `features/`, `modules/`, `domains/` | Tabela de módulos e os arquivos de cada um |
+| `test_*.py`, `*.test.ts`, `*.spec.ts` | Quantidade de testes por pasta e o runner, quando está nas dependências |
+| `TODO`, `FIXME` e `HACK` no código | Lista de pendências em "Lacunas conhecidas", com arquivo e linha |
 | `.husky/` | O que cada hook de git roda |
 | `.github/workflows/` | Quando cada workflow dispara e quais comandos roda |
-| `Dockerfile` | Estágios, porta, usuário, comando de início, argumentos de build |
+| `Dockerfile` | Estágios, porta, usuário, comando de início, argumentos de build e a versão do runtime da imagem base |
+| `docker-compose.yml` | Ferramenta reconhecida e o comando `docker compose up -d` |
 | Arquivos de configuração | Ferramentas em uso (Biome, ESLint, TypeScript, Vite, Next, Orval etc.) |
 | CSS, Sass, Less, `tailwind.config`, manifest | Cores da marca (só em frontend) |
+| `public/`, `static/`, `assets/`, `www/`, `images/` | Arquivos de marca: logotipo, símbolo, mascote, favicon, OG image, com formato e dimensões medidas (tipo `slides`) |
+| `next/font`, `<link>` do Google Fonts, `@font-face`, `fontFamily` do Tailwind, variáveis de CSS/Sass/Less | Famílias tipográficas e pesos declarados (tipo `slides`) |
+| `layout.tsx`, `index.html`, `manifest.json`, `app.json`, `pubspec.yaml`, `package.json` | Título, template de título, descrição e idioma, cada um com o arquivo que o declara (tipo `slides`) |
+
+### Seções aproveitadas do README
+
+Cada seção do README entra na seção equivalente do documento, com as subseções
+dela viradas em subtítulos. O que o documento já mostra como fato extraído
+(stack, scripts, instalação, variáveis, Docker) não é repetido.
+
+| Título no README (por aproximação) | Seção do documento |
+|---|---|
+| Decisões, arquitetura, regras, convenções, padrões | Regras e decisões de arquitetura |
+| Como usar, uso, funcionalidades, telas, fluxos, rotas | Como se usa a aplicação |
+| APIs, integrações, contratos, OpenAPI, webhooks | APIs e integrações |
+| Módulos, domínios, componentes | Módulos e componentes |
+| Organização, estrutura, pastas | Organização do código |
+| Qualidade, testes, lint, CI, scripts | Qualidade e testes |
+| Lacunas, limitações, pendências, roadmap, dívida | Lacunas conhecidas |
+
+Uma seção do README é aproveitada uma única vez. Sem README, o documento é
+montado só com o que o código confirma: rotas, módulos, dependências, testes,
+hooks, CI e Docker.
+
+### O que continua marcado com `(TODO)`
+
+Nada que esteja escrito nos arquivos. Sobra o que depende de interpretação e
+que nenhum arquivo responde:
+
+- o propósito do app, quando não há README nem `description`;
+- o caminho principal do usuário entre as telas ou endpoints (as rotas entram,
+  a narrativa não);
+- a responsabilidade de cada pasta e de cada módulo (os arquivos entram, o
+  "para que serve" não);
+- as invariantes de arquitetura, quando o README não as documenta;
+- o que cada checagem de CI protege.
 
 Detalhes:
 
 - **Segurança:** `.env`, `.env.local` e outros arquivos de ambiente reais nunca
   são lidos. Só os arquivos de exemplo da tabela.
 - **Codificação:** arquivos em UTF-8, UTF-8 com BOM, UTF-16 (comum em README
-  criado no Windows) e Latin-1 são lidos corretamente.
+  criado no Windows) e Latin-1 são lidos corretamente, com qualquer fim de
+  linha (LF ou CRLF).
+- **Caminhos:** os arquivos citados no documento (`src/features/auth`,
+  `app/routes.py:16`) aparecem com barra normal nas três plataformas, para o
+  mesmo YAML servir em Linux, WSL, macOS e Windows.
 - **Pastas ignoradas:** `node_modules`, `.git`, `dist`, `build`, `.next`,
-  `.venv` e outras de artefatos.
+  `.venv` e outras de artefatos. A varredura para em 1500 arquivos de código.
 - **Inconsistências:** quando dois arquivos se contradizem (por exemplo, o
   README manda usar yarn e o `package.json` está configurado para pnpm), o
   doc_app não escolhe um lado. Ele registra a divergência em "Lacunas
@@ -634,16 +882,40 @@ Cores que podem ser definidas: `brand`, `dark`, `accent`, `link`, `ink` (texto),
 ## Problemas comuns
 
 **`doc_app: command not found`**
-`~/.local/bin` não está no `PATH`. Adicione ao `~/.zshrc` (ou `~/.bashrc`) e
-abra um novo terminal:
+No Linux, no WSL e no macOS, `~/.local/bin` não está no `PATH`. Adicione ao
+`~/.zshrc` (ou `~/.bashrc`) e abra um novo terminal:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
+No Windows o comando é `doc-app`, com hífen. Se não for encontrado depois do
+`uv tool install`, rode `uv tool update-shell` e abra um novo terminal.
+
 **Erro de fonte ao gerar o PDF**
-As fontes DejaVu não estão em `/usr/share/fonts/truetype/dejavu`. Instale com
-`sudo apt install fonts-dejavu-core`.
+Nenhuma pasta conhecida tinha o trio de fontes. No Ubuntu, Debian ou WSL:
+`sudo apt install fonts-dejavu-core`. Em outro sistema, aponte
+`DOC_APP_FONT_DIR` para uma pasta com `DejaVuSans.ttf`,
+`DejaVuSans-Bold.ttf` e `DejaVuSansMono.ttf` (veja
+[Requisitos](#requisitos)). A mensagem de erro diz qual arquivo faltou.
+
+**O documento ficou com pouca coisa e muitos `(TODO)`**
+O repositório não tem README, ou o README só tem instalação e scripts. O texto
+das seções de uso, arquitetura e lacunas vem das seções equivalentes do README
+(veja [Seções aproveitadas do README](#seções-aproveitadas-do-readme)).
+Sem elas, só o que o código declara entra: rotas, módulos, dependências,
+testes, hooks, CI e Docker.
+
+**As rotas ou os módulos do app não apareceram**
+As rotas são reconhecidas por declaração: `APIRouter` do FastAPI, `Blueprint`
+do Flask, `page.tsx` do App Router do Next e `<Route path=…>` do react-router.
+Outro framework, ou rotas montadas em tempo de execução, não aparecem. Os
+módulos saem de uma pasta `features/`, `modules/`, `domains/`, `apps/`,
+`packages/` ou `services/`, na raiz, em `src/` ou em `app/`.
+
+**O PDF repetiu algo errado que está no README do app**
+O doc_app não corrige o README: ele aproveita o texto como está. Corrija no
+README do app e recrie (`doc_app clean <app>`), ou corrija direto no YAML.
 
 **O assistente não preencheu os `(TODO)`**
 Confira com `doc_app connections` se ele está conectado, recarregue o
@@ -677,10 +949,20 @@ Adicione a entrada à mão com o bloco do `snippet` (veja
 
 ## Desinstalar
 
+Em Linux, WSL ou macOS:
+
 ```bash
 ./scripts/cleanup.sh            # remove comando, conexões MCP, cache e artefatos
 ./scripts/cleanup.sh --venv     # também remove o ambiente .venv
 ./scripts/cleanup.sh --yes      # sem confirmação
+```
+
+No Windows:
+
+```powershell
+uv run python -m doc_app.clients unregister all   # conexões MCP
+uv run doc-app clean --yes                        # cache
+uv tool uninstall doc-app                         # comando
 ```
 
 O que é removido:
@@ -698,12 +980,16 @@ O código do doc_app não é apagado. Para voltar a usar: `./scripts/install.sh`
 
 ```
 bin/doc_app            atalho de execução (usado pelo link em ~/.local/bin)
-scripts/install.sh     instalação
-scripts/cleanup.sh     desinstalação
+scripts/install.sh     instalação (Linux, WSL, macOS)
+scripts/cleanup.sh     desinstalação (Linux, WSL, macOS)
+scripts/check_platform.py  checagem das partes que dependem da plataforma
 src/doc_app/
   cli.py               painel e comandos de linha
-  core.py              criar documento e gerar PDF (usado pela CLI e pelo MCP)
-  extract.py           fatos do repositório (README, scripts, env, pastas, CI, Docker)
+  core.py              criar documento e gerar o arquivo (usado pela CLI e pelo MCP)
+  extract.py           fatos do repositório (README, scripts, env, pastas, rotas,
+                       módulos, testes, CI, Docker)
+  identity.py          identidade visual (assets, cores, fontes, tokens)
+  md.py                Markdown do README convertido em blocos do documento
   detect.py            stack e tipo do app (frontend, backend...)
   brand.py             cores da marca de frontends
   skeleton.py          documento inicial a partir dos fatos
@@ -713,6 +999,8 @@ src/doc_app/
   theme.py             paleta, fontes, tipografia e tipos de documentação
   renderer.py          desenho do PDF (fpdf2): capa, sumário, blocos, marca
   builder.py           monta capa, sumário e corpo
+  slides.py            apresentação 16:9: capa, divisórias e blocos de marca
+  office.py            Word (.docx) e PowerPoint (.pptx) com o desenho do PDF
   textio.py            leitura de arquivos com detecção de codificação
   mcp_server.py        servidor MCP (ferramentas para assistentes)
   clients.py           conexão com os assistentes de IA
@@ -720,13 +1008,39 @@ src/doc_app/
 workspace/             cache local dos documentos (fora do git)
 ```
 
+As checagens rodam em qualquer sistema, inclusive no PowerShell:
+
+```bash
+uv run python scripts/check_platform.py   # fontes, caminhos, destino do arquivo
+uv run python scripts/check_extract.py    # análise do repositório
+uv run python scripts/check_slides.py     # identidade visual e deck em PDF
+uv run python scripts/check_office.py     # exportação .docx e .pptx
+uv run python scripts/check_menu.py       # navegação do painel
+```
+
 ## Limitações
 
-- Funciona só no Linux sem ajustes, por causa do caminho das fontes.
-- A extração lê arquivos de configuração e estrutura; ela não interpreta o
-  código. Propósito, fluxos e regras dependem de uma pessoa ou de um assistente.
+- No Windows, os scripts `install.sh` e `cleanup.sh` não rodam; a instalação é
+  feita com `uv tool install` (veja [No Windows](#no-windows)).
+- No Windows sem as fontes DejaVu, o PDF sai com Arial e Consolas: o desenho
+  muda um pouco em relação ao Linux.
+- A extração lê arquivos, estrutura e declarações de rota; ela não interpreta o
+  que o código faz. Propósito, fluxos e regras não documentadas no README
+  dependem de uma pessoa ou de um assistente.
+- No guia de identidade visual (`slides`), a fonte da marca não é embutida no
+  PDF e arquivos `.ico` não são desenhados; o deck também depende do
+  `app_path` gravado no YAML para achar as imagens.
+- As rotas são encontradas por declaração conhecida (FastAPI, Flask, App Router
+  do Next, react-router). Rotas montadas em tempo de execução, ou por outro
+  framework, não aparecem.
+- Só a prosa do README é aproveitada: se o README estiver desatualizado, o
+  documento herda o erro. Revise o YAML.
 - O texto escrito por um assistente pode conter erros de interpretação. Revise
   o YAML antes de distribuir o PDF.
 - O cache é apagado por `clean` e `cleanup.sh`; documentos com muito trabalho
   manual precisam de cópia em outro lugar.
 - A marca de uso restrito é só visual.
+- O `.docx` e o `.pptx` repetem o desenho do PDF, mas não as quebras: Word e
+  PowerPoint refluem o texto, e a fonte é substituída se a família do tema não
+  estiver instalada na máquina que abre. Logo e área de proteção em SVG também
+  não entram (o Office não lê SVG).

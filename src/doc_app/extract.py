@@ -22,6 +22,7 @@ from pathlib import Path
 import yaml
 
 from .detect import StackInfo, detect_stack
+from .md import plain_markdown as _plain_markdown
 from .textio import read_text
 
 MAX_READ = 512 * 1024  # não lê arquivos maiores que isso
@@ -33,7 +34,17 @@ IGNORED_DIRS = {
 }
 
 # Somente arquivos de EXEMPLO. .env / .env.local nunca são lidos.
-ENV_EXAMPLE_FILES = (".env.example", ".env.sample", ".env.template", ".env.dist")
+ENV_EXAMPLE_FILES = (".env.example", ".env.sample", ".env.template", ".env.dist",
+                     "example.env", "env.example", ".env.example.local")
+
+# Arquivos de código varridos para achar rotas, módulos e pendências.
+CODE_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts",
+                 ".vue", ".svelte", ".java", ".kt", ".php", ".rb", ".go",
+                 ".cs", ".dart", ".rs"}
+MAX_SOURCE_FILES = 1500
+
+# Pastas que agrupam os módulos do app, na ordem de preferência.
+MODULE_DIRS = ("features", "modules", "domains", "apps", "packages", "services")
 
 SETUP_HEADING = re.compile(
     r"come[cç]|instala|setup|getting started|quick ?start|rodando|rodar|executar|"
@@ -96,8 +107,26 @@ KNOWN_LIBS: dict[str, tuple[str, str]] = {
     "fastapi": ("Framework web", "FastAPI"),
     "django": ("Framework web", "Django"),
     "flask": ("Framework web", "Flask"),
+    "uvicorn": ("Servidor", "uvicorn"),
+    "gunicorn": ("Servidor", "gunicorn"),
     "pydantic": ("Validação", "Pydantic"),
     "sqlalchemy": ("Banco de dados", "SQLAlchemy"),
+    "sqlmodel": ("Banco de dados", "SQLModel"),
+    "alembic": ("Migrações", "Alembic"),
+    "pymysql": ("Driver de banco", "PyMySQL"),
+    "aiomysql": ("Driver de banco", "aiomysql"),
+    "psycopg2": ("Driver de banco", "psycopg2"),
+    "psycopg2-binary": ("Driver de banco", "psycopg2"),
+    "asyncpg": ("Driver de banco", "asyncpg"),
+    "redis": ("Cache", "Redis"),
+    "celery": ("Fila de tarefas", "Celery"),
+    "python-jose": ("Autenticação", "python-jose (JWT)"),
+    "passlib": ("Autenticação", "passlib"),
+    "bcrypt": ("Autenticação", "bcrypt"),
+    "boto3": ("Serviços de nuvem", "boto3 (AWS)"),
+    "httpx": ("Cliente HTTP", "httpx"),
+    "requests": ("Cliente HTTP", "requests"),
+    "openpyxl": ("Planilhas", "openpyxl"),
     "pytest": ("Testes", "pytest"),
     "ruff": ("Lint e formato", "Ruff"),
     "mypy": ("Tipagem", "mypy"),
@@ -107,9 +136,11 @@ KNOWN_LIBS: dict[str, tuple[str, str]] = {
 
 # Ordem das categorias na tabela de stack.
 _CATEGORY_ORDER = {cat: i for i, cat in enumerate([
-    "Framework web", "Estilo", "Componentes", "Ícones", "Formulários", "Validação",
-    "Estado global", "Estado de servidor", "Cliente HTTP", "Banco de dados", "PDF",
-    "Configuração", "Tipagem", "Lint e formato", "Testes", "Git hooks",
+    "Framework web", "Servidor", "Estilo", "Componentes", "Ícones", "Formulários",
+    "Validação", "Estado global", "Estado de servidor", "Cliente HTTP",
+    "Banco de dados", "Driver de banco", "Migrações", "Cache", "Fila de tarefas",
+    "Autenticação", "Serviços de nuvem", "Planilhas", "PDF", "Configuração",
+    "Tipagem", "Lint e formato", "Testes", "Git hooks",
 ])}
 
 # Arquivo de configuração -> ferramenta
@@ -132,6 +163,9 @@ TOOL_CONFIGS: list[tuple[str, str]] = [
     (".pre-commit-config.yaml", "pre-commit"),
     ("lefthook.yml", "lefthook"),
     ("ruff.toml", "Ruff"),
+    ("docker-compose.yml", "Docker Compose"),
+    ("docker-compose.yaml", "Docker Compose"),
+    ("compose.yaml", "Docker Compose"),
     ("Makefile", "Make"),
 ]
 
@@ -143,6 +177,37 @@ class EnvVar:
     key: str
     description: str
     example: str
+
+
+@dataclass
+class ReadmeSection:
+    """Uma seção do README, para ser aproveitada no documento."""
+    level: int
+    title: str
+    body: list[str]
+    used: bool = False    # já virou introdução, pré-requisitos ou instalação
+
+
+@dataclass
+class RouteGroup:
+    """Grupo de rotas declaradas no código.
+
+    kind: "api" (rotas que o app expõe), "page" (telas) ou "client" (endpoints
+    que o app consome, declarados num cliente HTTP).
+    """
+    label: str
+    base: str
+    ops: list[str]
+    source: str
+    kind: str = "api"
+
+
+@dataclass
+class Module:
+    """Pasta de módulo (feature/domínio) e os arquivos dela."""
+    name: str
+    path: str
+    files: list[str]
 
 
 @dataclass
@@ -169,6 +234,7 @@ class ProjectFacts:
     description: str | None = None
     readme_intro: str | None = None
     readme_prereqs: list[str] = field(default_factory=list)
+    readme_sections: list[ReadmeSection] = field(default_factory=list)
     setup_text: str | None = None
     setup_code: str | None = None
     setup_steps: list[str] = field(default_factory=list)
@@ -187,6 +253,10 @@ class ProjectFacts:
     staged_checks: list[tuple[str, str]] = field(default_factory=list)
     workflows: list[Workflow] = field(default_factory=list)
     docker: DockerInfo | None = None
+    routes: list[RouteGroup] = field(default_factory=list)
+    modules: list[Module] = field(default_factory=list)
+    test_files: list[tuple[str, int]] = field(default_factory=list)  # (pasta, nº)
+    code_todos: list[str] = field(default_factory=list)   # "arquivo:linha — texto"
     # Contradições encontradas entre arquivos do repositório (vão para
     # "Lacunas conhecidas"; o doc_app não escolhe um lado).
     warnings: list[str] = field(default_factory=list)
@@ -207,6 +277,7 @@ def extract_facts(app_path: Path) -> ProjectFacts:
     pyproject = _read_toml(app_path / "pyproject.toml")
     if pyproject:
         _from_pyproject(pyproject, facts)
+    _read_requirements(app_path, facts)
     _read_version_files(app_path, facts)
     _read_env_example(app_path, facts)
     _build_tree(app_path, facts)
@@ -214,6 +285,7 @@ def extract_facts(app_path: Path) -> ProjectFacts:
     _read_husky(app_path, facts)
     _read_workflows(app_path, facts)
     _read_dockerfile(app_path, facts)
+    _scan_sources(app_path, facts)
     _dedupe(facts.prereqs)
     _check_consistency(app_path, facts)
     return facts
@@ -277,16 +349,6 @@ def _dedupe(items: list) -> None:
     items[:] = out
 
 
-def _plain_markdown(text: str) -> str:
-    """Remove marcações simples de Markdown para caber no PDF."""
-    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)          # imagens
-    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)       # links
-    text = re.sub(r"`([^`]+)`", r"\1", text)                   # código inline
-    text = re.sub(r"(\*\*|__)(.+?)\1", r"\2", text)            # negrito
-    text = re.sub(r"(?<!\w)[*_](.+?)[*_](?!\w)", r"\1", text)  # itálico
-    return re.sub(r"\s+", " ", text).strip()
-
-
 def _short_cmd(cmd: str, limit: int = 90) -> str:
     cmd = re.sub(r"\s--no-warnings=\S+", "", cmd)
     cmd = re.sub(r"\s+", " ", cmd).strip()
@@ -309,38 +371,47 @@ def _read_readme(app: Path, facts: ProjectFacts) -> None:
     if not text:
         return
 
-    lines = text.splitlines()
-    # Seções: (titulo, linhas)
-    sections: list[tuple[str, list[str]]] = [("", [])]
+    # Quebra em seções: o preâmbulo (antes do primeiro título) vem com nível 0.
+    sections: list[ReadmeSection] = [ReadmeSection(level=0, title="", body=[])]
     in_fence = False
-    for line in lines:
+    for line in text.splitlines():
         if line.strip().startswith("```"):
             in_fence = not in_fence
-        if not in_fence and re.match(r"^#{1,6}\s", line):
-            sections.append((line.lstrip("#").strip(), []))
+        head = None if in_fence else re.match(r"^(#{1,6})\s+(.*)", line)
+        if head:
+            sections.append(ReadmeSection(level=len(head.group(1)),
+                                          title=head.group(2).strip(), body=[]))
         else:
-            sections[-1][1].append(line)
+            sections[-1].body.append(line)
+    facts.readme_sections = sections
 
     # Introdução: primeiro parágrafo de texto corrido antes da 2ª seção.
     # Sem parágrafo, usa o título principal do README.
-    intro_sources = sections[0][1] + (sections[1][1] if len(sections) > 1 else [])
-    facts.readme_intro = _first_paragraph(intro_sources)
-    if not facts.readme_intro and len(sections) > 1 and sections[1][0]:
-        facts.readme_intro = _plain_markdown(sections[1][0]) or None
+    head = sections[1] if len(sections) > 1 else None
+    facts.readme_intro = _first_paragraph(
+        sections[0].body + (head.body if head else []))
+    if facts.readme_intro:
+        sections[0].used = True
+        if head and _first_paragraph(head.body) == facts.readme_intro:
+            head.used = True
+    elif head and head.title:
+        facts.readme_intro = _plain_markdown(head.title) or None
 
-    for title, body in sections:
-        if not title:
+    for sec in sections:
+        if not sec.title:
             continue
-        if PREREQ_HEADING.search(title) and not facts.readme_prereqs:
-            facts.readme_prereqs = _list_items(body)
-        elif SETUP_HEADING.search(title) and facts.setup_text is None \
+        if PREREQ_HEADING.search(sec.title) and not facts.readme_prereqs:
+            facts.readme_prereqs = _list_items(sec.body)
+            sec.used = True
+        elif SETUP_HEADING.search(sec.title) and facts.setup_text is None \
                 and facts.setup_code is None:
-            facts.setup_text = _first_paragraph(body)
-            facts.setup_code = _first_code_block(body)
-            facts.setup_steps = _list_items(body)
+            facts.setup_text = _first_paragraph(sec.body)
+            facts.setup_code = _first_code_block(sec.body)
+            facts.setup_steps = _list_items(sec.body)
             if facts.setup_code is None:
-                cmds = _commands_in(body)
+                cmds = _commands_in(sec.body)
                 facts.setup_code = "\n".join(cmds) if cmds else None
+            sec.used = any((facts.setup_text, facts.setup_code, facts.setup_steps))
 
 
 def _list_items(lines: list[str]) -> list[str]:
@@ -477,10 +548,35 @@ def _collect_libs(deps: dict, facts: ProjectFacts) -> None:
 
     # versão do framework detectado
     for dep, label in (("next", "Next.js"), ("react", "React"), ("vue", "Vue"),
-                       ("svelte", "Svelte"), ("@angular/core", "Angular")):
+                       ("svelte", "Svelte"), ("@angular/core", "Angular"),
+                       ("fastapi", "FastAPI"), ("django", "Django"),
+                       ("flask", "Flask")):
         if dep in deps and facts.stack.framework == label:
             facts.stack.framework = f"{label} {_clean_version(deps[dep])}"
             break
+
+
+def _read_requirements(app: Path, facts: ProjectFacts) -> None:
+    """requirements.txt: dependências e bibliotecas reconhecidas.
+
+    Arquivo gerado por `pip freeze` traz também as transitivas, mas é a única
+    lista de dependências que o projeto declara.
+    """
+    if facts.dependencies:
+        return                      # package.json/pyproject já declararam
+    text = _read_text(app / "requirements.txt")
+    if not text:
+        return
+    deps: list[tuple[str, str]] = []
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line or line.startswith("-"):
+            continue
+        m = re.match(r"^([A-Za-z0-9_.\-\[\]]+)\s*(.*)$", line)
+        if m:
+            deps.append((m.group(1), _clean_version(m.group(2)) or "—"))
+    facts.dependencies += deps
+    _collect_libs({name.split("[")[0].lower(): v for name, v in deps}, facts)
 
 
 def _read_version_files(app: Path, facts: ProjectFacts) -> None:
@@ -675,3 +771,265 @@ def _read_dockerfile(app: Path, facts: ProjectFacts) -> None:
         elif upper.startswith("ARG "):
             info.build_args.append(line.split(None, 1)[1].split("=")[0])
     facts.docker = info
+    # A imagem base fixa a versão do runtime; é pré-requisito tanto quanto o .nvmrc.
+    for stage in info.stages:
+        m = re.match(r"(python|node):([0-9][0-9.]*)", stage)
+        label = {"python": "Python", "node": "Node"}.get(m.group(1)) if m else None
+        if label and not any(p.startswith(label + " ") for p in facts.prereqs):
+            facts.prereqs.append(f"{label} {m.group(2)} (imagem base do Dockerfile)")
+
+
+# --- varredura do código (rotas, módulos, pendências) ----------------------
+
+_PY_DECL = re.compile(r"^\s*(\w+)\s*=\s*(?:APIRouter|Blueprint)\s*\((.*?)\)\s*$",
+                      re.M | re.S)
+_PREFIX = re.compile(r"""(?:url_)?prefix\s*=\s*["']([^"']*)["']""")
+_TAG = re.compile(r"""tags\s*=\s*\[\s*["']([^"']+)["']""")
+_PY_OP = re.compile(
+    r"""@(\w+)\.(get|post|put|patch|delete|route)\((.{0,400}?)\)\s*(?:async\s+)?def""",
+    re.S | re.I)
+_OP_PATH = re.compile(r"""^\s*["']([^"']*)["']""")
+_OP_PATH_KW = re.compile(r"""path\s*=\s*["']([^"']*)["']""")
+_METHODS = re.compile(r"""methods\s*=\s*\[([^\]]+)\]""")
+_ROUTE_PATH = re.compile(r"""<Route\s[^>]*path=["']([^"']+)["']""")
+# Rotas declaradas em outras linguagens e frameworks, por declaração conhecida.
+_JS_OP = re.compile(r"""\b(router|app|server|api|instance|mux|srv|http|client|axios)\.(get|post|put|patch|delete)\(\s*["'`]([^"'`]*)""", re.I)
+# Receptores que servem rotas; os outros (api, http, client) consomem.
+_SERVERS = {"router", "app", "server", "mux", "srv"}
+_NEST_CTRL = re.compile(r"""@Controller\(\s*["']?([^"')]*)""")
+_NEST_OP = re.compile(r"""@(Get|Post|Put|Patch|Delete)\(\s*(?:["']([^"']*)["'])?\s*\)""")
+_SPRING_CTRL = re.compile(r"""@RequestMapping\(\s*(?:value\s*=\s*)?["']([^"']*)""")
+_SPRING_OP = re.compile(r"""@(Get|Post|Put|Patch|Delete)Mapping\b(?:\(\s*(?:value\s*=\s*)?["']?([^"')]*))?""")
+_GO_OP = re.compile(r"""\b\w{1,10}\.(Get|Post|Put|Patch|Delete|HandleFunc)\(\s*["`]([^"`]*)""")
+_LARAVEL_OP = re.compile(r"""Route::(get|post|put|patch|delete)\(\s*["']([^"']*)""")
+_CONFIG_ROUTE = re.compile(r"""[{,]\s*path\s*:\s*["'`]([^"'`]*)["'`]""")
+_TEST_FILE = re.compile(r"^test_.*\.py$|_test\.py$|\.(test|spec)\.[jt]sx?$", re.I)
+_TODO_MARK = re.compile(r"""(?:#|//|/\*)\s*(TODO|FIXME|HACK)\b[:\s-]*(.{0,100})""")
+MAX_OPS = 14          # operações listadas por grupo de rotas
+MAX_TODOS = 12        # pendências citadas em "Lacunas conhecidas"
+MAX_PY_FILES = 500    # arquivos .py guardados em memória para achar rotas
+
+
+def source_files(app: Path, limit: int = MAX_SOURCE_FILES) -> list[Path]:
+    """Arquivos de código do app, sem dependências nem artefatos de build.
+
+    A extensão é comparada em minúsculas: no Windows e no macOS o sistema de
+    arquivos não diferencia maiúsculas, e `Routes.PY` existe.
+    """
+    found: list[Path] = []
+    pending = [app]
+    while pending and len(found) < limit:
+        for child in _visible_children(pending.pop()):
+            if child.is_dir():
+                pending.append(child)
+            elif child.suffix.lower() in CODE_SUFFIXES:
+                found.append(child)
+    return found
+
+
+def _scan_sources(app: Path, facts: ProjectFacts) -> None:
+    pages: dict[str, list[str]] = {}
+    spa: list[str] = []
+    python: list[tuple[str, str]] = []
+    others: list[tuple[str, str]] = []
+    tests: dict[str, int] = {}
+    for path in sorted(source_files(app)):
+        rel = path.relative_to(app)
+        text = _read_text(path)
+        if text:
+            _collect_todos(rel.as_posix(), text, facts)
+        if _TEST_FILE.search(path.name):
+            root = _test_root(rel)
+            tests[root] = tests.get(root, 0) + 1
+        if path.stem.lower() == "page" and "app" in rel.parts:
+            group, route = _next_route(rel)
+            pages.setdefault(group, []).append(route)
+        elif path.suffix.lower() == ".py":
+            if text and len(python) < MAX_PY_FILES:
+                python.append((rel.as_posix(), text))
+        elif text:
+            spa += [m.group(1) for m in _ROUTE_PATH.finditer(text)]
+            if len(others) < MAX_PY_FILES:
+                others.append((rel.as_posix(), text))
+
+    groups = _py_routes(python) + _other_routes(others)
+    for group, routes in pages.items():
+        groups.append(RouteGroup(
+            label=group, base="/", ops=sorted(set(routes)), kind="page",
+            source="app/" + group if group.startswith("(") else "app"))
+    if spa and not pages:
+        clean = sorted({r if r.startswith("/") else "/" + r for r in spa})
+        groups.append(RouteGroup(label="rotas", base="/", ops=clean, kind="page",
+                                 source="react-router"))
+    # api antes de page, page antes de client: se houver corte, o que o app
+    # expõe e as telas ficam, e os endpoints consumidos cedem lugar
+    order = {"api": 0, "page": 1, "client": 2}
+    groups.sort(key=lambda g: (order.get(g.kind, 3), g.label))
+    facts.routes = groups[:24]
+    facts.test_files = sorted(tests.items())
+    _scan_modules(app, facts)
+
+
+def _test_root(rel: Path) -> str:
+    """Pasta que agrupa os testes, para contar por onde eles estão."""
+    for i, part in enumerate(rel.parts[:-1]):
+        if part.lower() in ("tests", "test", "__tests__", "spec", "e2e"):
+            return "/".join(rel.parts[:i + 1])
+    return rel.parts[0] if len(rel.parts) > 1 else "."
+
+
+def _py_routes(files: list[tuple[str, str]]) -> list[RouteGroup]:
+    """Routers do FastAPI e blueprints do Flask, com as operações de cada um.
+
+    O decorador costuma ficar em outro arquivo da mesma pasta que a declaração
+    (`api/pedidos/__init__.py` declara, `routes.py` decora), então a ligação é
+    feita pela pasta e pelo nome da variável.
+    """
+    decls: dict[tuple[str, str], RouteGroup] = {}
+    by_var: dict[str, list[tuple[str, str]]] = {}
+    for rel, text in files:
+        folder = rel.rpartition("/")[0]
+        for m in _PY_DECL.finditer(text):
+            var, args = m.group(1), m.group(2)
+            base, tag = _PREFIX.search(args), _TAG.search(args)
+            key = (folder, var)
+            decls[key] = RouteGroup(
+                label=tag.group(1) if tag else (folder.rpartition("/")[2] or var),
+                base=base.group(1) if base else "/", ops=[], source=rel)
+            by_var.setdefault(var, []).append(key)
+
+    for rel, text in files:
+        folder = rel.rpartition("/")[0]
+        for m in _PY_OP.finditer(text):
+            var, verb, args = m.group(1), m.group(2).lower(), m.group(3)
+            key = (folder, var)
+            if key not in decls:
+                candidates = by_var.get(var) or []
+                if len(candidates) != 1:   # ambíguo: não dá para afirmar o grupo
+                    continue
+                key = candidates[0]
+            route = _OP_PATH.match(args) or _OP_PATH_KW.search(args)
+            if not route:
+                continue
+            if verb == "route":
+                found = _METHODS.search(args)
+                verbs = (re.findall(r"""["'](\w+)["']""", found.group(1)) if found
+                         else ["get"])
+            else:
+                verbs = [verb]
+            ops = decls[key].ops
+            for v in verbs:
+                label = f"{v.upper()} {route.group(1) or '/'}"
+                if label not in ops:
+                    ops.append(label)
+
+    groups = []
+    for group in decls.values():
+        if not group.ops:
+            continue
+        extra = len(group.ops) - MAX_OPS
+        if extra > 0:
+            group.ops = group.ops[:MAX_OPS] + [f"… (+{extra})"]
+        groups.append(group)
+    return groups
+
+
+def _other_routes(files: list[tuple[str, str]]) -> list[RouteGroup]:
+    """Rotas declaradas fora de Python e do App Router: Express e afins, NestJS,
+    Spring, Laravel, e as listas de rotas do Vue Router e do Angular.
+
+    Uma declaração por arquivo, que é como esses frameworks organizam: um
+    controller ou um módulo de rotas por arquivo.
+    """
+    groups: list[RouteGroup] = []
+    for rel, text in files:
+        folder = rel.rpartition("/")[0].rpartition("/")[2] or rel
+        ops: list[str] = []
+        base = "/"
+        kind = "api"
+
+        ctrl = _NEST_CTRL.search(text)
+        if ctrl and _NEST_OP.search(text):
+            base = "/" + ctrl.group(1).strip("/") if ctrl.group(1).strip() else "/"
+            ops = [f"{verb.upper()} /{(path or '').strip('/')}"
+                   for verb, path in _NEST_OP.findall(text)]
+        elif _SPRING_OP.search(text):
+            spring = _SPRING_CTRL.search(text)
+            base = "/" + spring.group(1).strip("/") if spring else "/"
+            ops = [f"{verb.upper()} /{(path or '').strip('/')}"
+                   for verb, path in _SPRING_OP.findall(text)]
+        elif _LARAVEL_OP.search(text):
+            ops = [f"{verb.upper()} /{path.strip('/')}"
+                   for verb, path in _LARAVEL_OP.findall(text)]
+        elif rel.endswith(".go") and _GO_OP.search(text):
+            ops = [f"{('GET' if verb == 'HandleFunc' else verb.upper())} "
+                   f"/{path.strip('/')}" for verb, path in _GO_OP.findall(text)]
+        elif _JS_OP.search(text):
+            found = _JS_OP.findall(text)
+            ops = [f"{verb.upper()} /{path.strip('/')}" for _, verb, path in found]
+            receivers = {r.lower() for r, _, _ in found}
+            # cliente HTTP (axios e afins) consome endpoints; não expõe rotas
+            if not receivers & _SERVERS or "axios" in text.lower():
+                kind = "client"
+        else:
+            config = [p for p in _CONFIG_ROUTE.findall(text) if p not in ("", "*")]
+            if len(config) >= 3:          # lista de rotas de tela
+                kind = "page"
+                ops = sorted({"/" + p.strip("/") for p in config})
+
+        ops = _dedupe_ops(ops)
+        if not ops:
+            continue
+        extra = len(ops) - MAX_OPS
+        groups.append(RouteGroup(
+            label=folder, base=base, kind=kind, source=rel,
+            ops=ops[:MAX_OPS] + ([f"… (+{extra})"] if extra > 0 else [])))
+    return groups
+
+
+def _dedupe_ops(ops: list[str]) -> list[str]:
+    seen, out = set(), []
+    for op in ops:
+        op = re.sub(r"\s+", " ", op).strip()
+        if op and op not in seen:
+            seen.add(op)
+            out.append(op)
+    return out
+
+
+def _next_route(rel: Path) -> tuple[str, str]:
+    """Rota e grupo de um `page.tsx` do App Router do Next."""
+    segs = rel.parts[rel.parts.index("app") + 1:-1]
+    group = next((s for s in segs if s.startswith("(")), "páginas")
+    route = "/" + "/".join(s for s in segs if not s.startswith("("))
+    return group, route.rstrip("/") or "/"
+
+
+def _scan_modules(app: Path, facts: ProjectFacts) -> None:
+    """Pastas de módulo (features/, modules/ …) e os arquivos de cada uma."""
+    for parent in (app, app / "src", app / "app", app / "src" / "app"):
+        for name in MODULE_DIRS:
+            directory = parent / name
+            if not directory.is_dir():
+                continue
+            mods = [Module(name=sub.name, path=sub.relative_to(app).as_posix(),
+                           files=[f.name for f in _visible_children(sub)][:12])
+                    for sub in _visible_children(directory) if sub.is_dir()]
+            if mods:
+                facts.modules = mods
+                return
+
+
+def _collect_todos(rel: str, text: str, facts: ProjectFacts) -> None:
+    if len(facts.code_todos) >= MAX_TODOS:
+        return
+    for n, line in enumerate(text.splitlines(), 1):
+        m = _TODO_MARK.search(line)
+        if not m:
+            continue
+        # sem parênteses: "(TODO)" é a marca dos trechos a completar no documento
+        note = _plain_markdown(m.group(2)).replace("(", "").replace(")", "")
+        facts.code_todos.append(f"{rel}:{n} — {m.group(1)}"
+                                + (f": {note}" if note else ""))
+        if len(facts.code_todos) >= MAX_TODOS:
+            return
