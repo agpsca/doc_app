@@ -6,8 +6,7 @@ Dois modos:
       doc-app
     Pergunta o caminho do app, o tipo de documentação, o formato e onde salvar.
     Enter no caminho repete o último app documentado.
-    Oferece criar um esqueleto quando o app ainda não tem doc no cache,
-    ou só o YAML editável (sem gerar arquivo) pela opção "Criar só a fonte".
+    Oferece criar um esqueleto quando o app ainda não tem doc no cache.
 
   Direto (scriptável):
       doc-app build <app> --type full --format docx -o saida.docx
@@ -39,7 +38,6 @@ from .core import (
     FORMATS,
     build,
     cache_dir,
-    count_todos_in_file,
     create_doc,
     default_output,
     doc_path,
@@ -83,13 +81,18 @@ def generate(
     label = f"{res.doc_type}, {cls.lower()}" if cls else res.doc_type
     print(f"{res.output.suffix.lstrip('.').upper()} gerado ({label}): "
           f"{res.output}  ({res.blocks} blocos)")
-    if fmt in ("docx", "pptx") and res.theme.fonts.sans_regular.startswith("DejaVu"):
-        # o PDF embute a fonte; o Office só pede pelo nome e troca se faltar
+    if fmt == "pptx" and res.theme.fonts.sans_regular.startswith("DejaVu"):
+        # o PDF embute a fonte, e o .docx também (office._embed_fonts); o
+        # PowerPoint não tem equivalente e só pede a fonte pelo nome
         print(f"   {_DIM}O arquivo pede a fonte DejaVu Sans. Se a máquina que "
-              f"abrir não tiver, o Office troca a fonte e o texto muda de "
+              f"abrir não tiver, o PowerPoint troca a fonte e o texto muda de "
               f"medida; nesse caso gere com "
               f"DOC_APP_FONT_DIR=/mnt/c/Windows/Fonts (Arial no PDF e no "
               f"Office).{_Z}")
+    if fmt == "docx":
+        print(f"   {_DIM}As fontes vão embutidas no arquivo, então o Word "
+              f"desenha igual ao PDF em qualquer máquina. LibreOffice e "
+              f"Google Docs ignoram fonte embutida e substituem.{_Z}")
     return 0
 
 
@@ -333,7 +336,6 @@ def _run_panel() -> int:
     acoes = [
         ("📝  Gerar documentação de um app (PDF, Word ou PowerPoint)",
          _panel_generate),
-        ("📄  Criar só a fonte editável (YAML)", _panel_create),
         ("🔎  Ver assistentes conectados",
          lambda: cmd_connections(argparse.Namespace(all=False))),
         ("🔌  Conectar a assistentes de IA (MCP)",
@@ -389,25 +391,6 @@ def _panel_generate() -> int:
     if rc == 0:
         print("🎉 Concluído!")
     return rc
-
-
-def _panel_create() -> int:
-    """Cria só o YAML editável (sem gerar arquivo), para escrever o texto à
-    mão ou com um assistente antes de gerar."""
-    app_path = _ask_app_path()
-    doc_type = _ask_doc_type()
-
-    dp = doc_path(app_path.name, doc_type)
-    if dp.exists():
-        print(f"\n📄 Já existe uma fonte editável: {dp}")
-        print(f"   {_DIM}{count_todos_in_file(dp)} trecho(s) com (TODO) a "
-              f"completar. Edite o arquivo e gere o documento pela opção 1.{_Z}")
-        return 0
-
-    if not ensure_skeleton(app_path, doc_type, assume_yes=False):
-        return 1
-    print(f"   {_DIM}Edite o arquivo e gere o documento pela opção 1.{_Z}")
-    return 0
 
 
 def _ask_mark() -> str | None:

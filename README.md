@@ -251,7 +251,6 @@ doc_app
 | Opção | O que faz |
 |---|---|
 | 📝 Gerar documentação de um app | Pede caminho, tipo, formato, marca e destino, e gera o arquivo. Se o YAML do app e tipo ainda não existir, oferece criá-lo |
-| 📄 Criar só a fonte editável (YAML) | Pede caminho e tipo e cria só o YAML, sem gerar arquivo: é onde se escreve o texto, à mão ou com um assistente. Se já existir, mostra onde está e não recria |
 | 🔎 Ver assistentes conectados | Mostra em quais assistentes de IA o doc_app está conectado. Só lê |
 | 🔌 Conectar a assistentes de IA | Conecta o doc_app aos assistentes escolhidos |
 | 🧹 Limpar cache | Apaga os YAML de todos os apps (pede confirmação) |
@@ -285,17 +284,22 @@ zebrada, as amostras de cor e a marca d'água do documento restrito.
 | Formato | Para que serve |
 |---|---|
 | `pdf` | Entrega. Mede o texto na geração, então as quebras são definitivas |
-| `docx` | Editar no Word, Google Docs ou LibreOffice. Títulos nos estilos `Heading 1/2/3` e sumário em campo nativo (o Word atualiza ao abrir) |
+| `docx` | Editar no Word, Google Docs ou LibreOffice. Títulos nos estilos `Heading 1/2/3`, sumário em campo nativo (o Word atualiza ao abrir) e as fontes do tema embutidas no arquivo |
 | `pptx` | Editar no PowerPoint ou Google Slides. Capa e divisórias escuras, um slide por `h2`, slide de sumário e `(cont.)` no que transborda |
 
 O que não dá para igualar:
 
-- **Fontes.** O arquivo pede a mesma família do PDF. Se a máquina que abrir não
-  tiver essa família, o Office substitui. No Windows, gere com
+- **Fontes no PowerPoint.** O `.pptx` pede a família pelo nome, e o PowerPoint
+  substitui se a máquina não a tiver. No Windows, gere com
   `DOC_APP_FONT_DIR=/mnt/c/Windows/Fonts` (ou instale as fontes DejaVu) para o
-  PDF e o Office usarem a mesma fonte.
+  PDF e o PowerPoint usarem a mesma. O `.docx` não tem esse problema: as
+  fontes do tema vão **embutidas** no arquivo, como no PDF, então o Word
+  desenha igual em qualquer máquina — cada fonte soma ~700 KB, e LibreOffice e
+  Google Docs ignoram fonte embutida e voltam a substituir.
 - **Quebras.** Word e PowerPoint refluem o texto; as quebras de página e de
-  linha não caem exatamente onde o PDF mediu.
+  linha não caem exatamente onde o PDF mediu. No `.docx`, o cabeçalho da
+  tabela repete na quebra e a linha não se divide, como no PDF, mas a
+  paginação em si não é a mesma.
 - **SVG.** Logo e área de proteção em SVG não entram (o Office não lê SVG): no
   lugar fica a legenda com o caminho do arquivo.
 

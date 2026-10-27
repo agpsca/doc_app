@@ -11,6 +11,10 @@ formatos e confere duas coisas:
    régua e número de página, sumário, filete do h1, caixa de código, callout
    com barra, tabela de cabeçalho escuro com zebra, amostras na cor certa,
    marca d'água diagonal, e as fontes e medidas do tema.
+3. **Desenha como o PDF em máquina alheia** (`check_fidelity`): as fontes do
+   tema vão embutidas no pacote, o sumário sai na paleta em vez do Calibri
+   azul do Word, a tabela repete o cabeçalho na quebra, as amostras seguem a
+   ordem do PDF e os glifos sem desenho são cortados dos dois lados.
 
 Uso:
     uv run python scripts/check_office.py
@@ -35,7 +39,7 @@ from pptx import Presentation
 from doc_app import office
 from doc_app.dsl import BLOCK_TYPES, Block
 from doc_app.office import build_docx, build_pptx
-from doc_app.theme import BRAND_THEME, SLIDES_THEME
+from doc_app.theme import BRAND_THEME, DEVELOPMENT_THEME, SLIDES_THEME
 
 # PNG 1x1 válido: só para provar que imagem em formato raster entra no arquivo.
 PNG = base64.b64decode(
@@ -49,7 +53,7 @@ def blocks() -> list[Block]:
     """Um bloco de cada tipo da DSL, para nenhum ficar sem tradução."""
     doc = [
         Block("h1", "1. A marca"),
-        Block("p", "Parágrafo de abertura."),
+        Block("p", "Parágrafo de abertura. 🎨"),
         Block("h2", "1.1. Regras"),
         Block("p", "(TODO) O que ainda falta decidir."),
         Block("bullet", ["primeiro item", "segundo item"]),
@@ -65,7 +69,7 @@ def blocks() -> list[Block]:
         Block("logo", {"path": "logo.png", "caption": "Assinatura principal"}),
         Block("clearspace", {"path": "logo.svg", "ratio": 0.5}),
         Block("swatches", {"items": [{"name": "Principal", "hex": "#5168DA"},
-                                     {"name": "Escura", "hex": "#242F62"}]}),
+                                     {"name": "$escura", "hex": "#242F62"}]}),
         Block("specimen", {"font": "Poppins", "role": "títulos",
                            "weights": "400, 600"}),
     ]
@@ -161,6 +165,110 @@ def check_docx(assets: Path, out: Path) -> None:
     cab = tabela.rows[0].cells[0].paragraphs[0].runs[0]
     assert cab.font.bold and cab.font.color.rgb == office.RGBColor(*pal.white)
 
+    check_fidelity(theme, path, content, doc, texto, xml, head)
+
+
+def check_fidelity(theme, path: Path, content: dict, doc, texto: str,
+                   xml: str, head: str) -> None:
+    """Confere o que faz o .docx desenhar como o PDF, e não só abrir.
+
+    Cada bloco aqui corresponde a uma coisa que o PDF faz e o .docx precisa
+    repetir: fonte embutida (senão o Word substitui e todo o texto reflui),
+    sumário na paleta, tabela que repete o cabeçalho, amostras na ordem do
+    PDF e o mesmo corte de glifos.
+    """
+    pal, typo = theme.palette, theme.typography
+    mono = office._family(theme.fonts.mono_regular, "Consolas")
+
+    # --- fontes embutidas: o PDF embute os TTF; o .docx tem de levá-los
+    fontes = sorted(n for n in content if n.startswith("word/fonts/"))
+    assert len(fontes) == 3, f"esperava 3 fontes embutidas, achei {fontes}"
+    assert "obfuscatedFont" in content["[Content_Types].xml"].decode(), \
+        "a parte da fonte sem tipo de conteúdo declarado: o Word rejeita"
+    ft = content["word/fontTable.xml"].decode()
+    for tag in ("<w:embedRegular ", "<w:embedBold "):
+        assert tag in ft, f"fontTable sem {tag.strip('< ')}"
+    assert ft.count(office._NULL_FONT_KEY) == 3, \
+        "fontKey diferente da chave nula exige ofuscar os 32 primeiros bytes"
+    rels = content["word/_rels/fontTable.xml.rels"].decode()
+    for rid in re.findall(r'r:id="(\w+)"', ft):
+        assert f'Id="{rid}"' in rels, f"{rid} sem relação para a parte da fonte"
+    # chave nula = XOR identidade: os bytes têm de bater com o TTF do tema
+    for part, arquivo in zip(fontes, (theme.fonts.sans_regular,
+                                      theme.fonts.sans_bold,
+                                      theme.fonts.mono_regular)):
+        esperado = Path(theme.fonts.path(arquivo)).read_bytes()
+        assert content[part] == esperado, f"{part} não é o TTF de {arquivo}"
+    assert "embedTrueTypeFonts" in content["word/settings.xml"].decode(), \
+        "sem o ajuste, o Word descarta as fontes embutidas ao salvar de novo"
+
+    # --- sumário na paleta: sem estes estilos o Word usa Calibri Light e azul
+    for nivel, cor in ((1, pal.brand), (2, pal.ink), (3, pal.muted)):
+        estilo = doc.styles[f"TOC {nivel}"]
+        assert estilo.font.color.rgb == office.RGBColor(*cor), f"TOC {nivel}"
+        assert "themeColor" not in estilo.element.xml, f"TOC {nivel} com tema"
+    assert doc.styles["Hyperlink"].font.color.rgb == office.RGBColor(*pal.link)
+    assert 'w:leader="dot"' in content["word/styles.xml"].decode(), \
+        "sumário sem líderes pontilhados"
+
+    # --- corpo das listas: o PDF usa typo.list_size, não o corpo do Normal
+    for nome in ("List Bullet", "List Number"):
+        assert doc.styles[nome].font.size.pt == typo.list_size, nome
+    # --- tabela: cabeçalho repete na quebra, linha não se divide, respiro 2 mm
+    assert "w:tblHeader" in xml, "cabeçalho da tabela não repete na quebra"
+    assert "w:cantSplit" in xml, "linha da tabela pode se dividir na quebra"
+    assert f'w:w="{round(office._pt(2.0) * 20)}"' in xml, \
+        "célula sem o respiro de 2 mm do PDF"
+
+    # --- marca d'água por cima, como o PDF a desenha no footer()
+    assert "z-index:251658240" in head, "marca d'água atrás do conteúdo"
+
+    # --- cabeçalho e rodapé divididos em três, como os terços do PDF.
+    # Os estilos Header/Footer do modelo trazem tabs de Letter (centro 82,5 mm,
+    # direita 165,1 mm) e no OOXML os tabs do parágrafo SOMAM aos do estilo:
+    # sem limpar, o \t para no tab do modelo e o texto da direita fica no meio.
+    largura = theme.page.content_width
+    for nome in ("Header", "Footer"):
+        assert not len(doc.styles[nome].paragraph_format.tab_stops), \
+            f"estilo {nome} ainda tem os tabs de Letter do modelo"
+    for nome, parte in (("cabeçalho", doc.sections[1].header),
+                        ("rodapé", doc.sections[1].footer)):
+        paradas = [(str(ts.alignment), ts.position.mm)
+                   for ts in parte.paragraphs[0].paragraph_format.tab_stops]
+        assert len(paradas) == 2, f"{nome} com {len(paradas)} tabs: {paradas}"
+        (centro, meio), (direita, fim) = paradas
+        assert "CENTER" in centro and abs(meio - largura / 2) < 0.1, paradas
+        assert "RIGHT" in direita and abs(fim - largura) < 0.1, \
+            f"{nome}: tab da direita em {fim:.1f} mm, não na margem {largura}"
+
+    # --- amostras: código em Mono na cor da marca em cima, nome embaixo
+    assert "#242F62" in texto, "amostra sem o código da cor em maiúsculas"
+    assert "escura" in texto and "$escura" not in texto, \
+        "prefixo do token deveria sair do nome, como no PDF"
+    amostra = next(t for t in doc.tables
+                   if len(t.columns) == 6 and len(t.rows) == 2)
+    rotulo = amostra.rows[1].cells[0]
+    primeiro = rotulo.paragraphs[0].runs[0]
+    assert primeiro.text == "#5168DA", f"código esperado primeiro: {primeiro.text!r}"
+    assert primeiro.font.name == mono, "código da amostra fora da fonte Mono"
+    assert primeiro.font.color.rgb == office.RGBColor(*pal.brand)
+    nome = rotulo.paragraphs[1].runs[0]
+    assert nome.text == "Principal" and \
+        nome.font.color.rgb == office.RGBColor(*pal.muted)
+    assert "w:tcBorders" in amostra.rows[0].cells[0]._tc.xml, \
+        "quadrado da cor sem a borda que o PDF desenha"
+
+    # --- metadados, como renderer._apply_metadata grava no PDF
+    props = doc.core_properties
+    assert theme.cover.title in (props.title or ""), props.title
+    assert props.subject == theme.cover.tagline and props.author == "doc_app"
+    assert props.language == "pt-BR" and props.keywords == MARK
+
+    # --- mesmo corte de glifos do PDF (builder._render_block)
+    assert "🎨" not in texto, \
+        "emoji que a fonte não desenha sai do PDF e deveria sair do .docx"
+    assert "Parágrafo de abertura." in texto, texto
+
 
 def check_pptx(assets: Path, out: Path) -> None:
     theme = dataclasses.replace(SLIDES_THEME, assets_root=str(assets),
@@ -229,6 +337,24 @@ def check_pptx(assets: Path, out: Path) -> None:
                 f"forma passa da borda direita no slide {i}"
 
 
+def check_list_size(out: Path) -> None:
+    """O corpo da lista é o do PDF, não o do parágrafo.
+
+    No tema `development` os dois valores diferem (parágrafo 10, lista 10,5),
+    que é o único lugar onde a troca aparece — por isso a checagem usa esse
+    tema, e não o `brand`, em que os dois coincidem.
+    """
+    typo = DEVELOPMENT_THEME.typography
+    assert typo.body_size != typo.list_size, \
+        "checagem sem efeito: escolha um tema em que os corpos diferem"
+    doc = Document(str(build_docx([Block("bullet", ["item"])],
+                                  out / "lista.docx", DEVELOPMENT_THEME)))
+    for nome in ("List Bullet", "List Number"):
+        assert doc.styles[nome].font.size.pt == typo.list_size, \
+            f"{nome} com {doc.styles[nome].font.size.pt} pt, não {typo.list_size}"
+    assert doc.styles["Normal"].font.size.pt == typo.body_size
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as raw:
         tmp = Path(raw)
@@ -237,9 +363,10 @@ def main() -> int:
         (assets / "logo.png").write_bytes(PNG)
         (assets / "logo.svg").write_text("<svg/>", encoding="utf-8")
         check_docx(assets, tmp)
+        check_list_size(tmp)
         check_pptx(assets, tmp)
     print("ok: docx e pptx válidos, com a capa, as cores, as fontes e a marca "
-          "do PDF")
+          "do PDF; docx com as fontes embutidas e o sumário na paleta")
     return 0
 
 

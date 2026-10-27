@@ -27,8 +27,18 @@ from xml.sax.saxutils import quoteattr
 
 from docx import Document
 from docx.enum.section import WD_SECTION
+from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.table import WD_ALIGN_VERTICAL
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK, WD_TAB_ALIGNMENT
+from docx.enum.text import (
+    WD_ALIGN_PARAGRAPH,
+    WD_BREAK,
+    WD_TAB_ALIGNMENT,
+    WD_TAB_LEADER,
+)
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
+from docx.opc.oxml import serialize_part_xml
+from docx.opc.packuri import PackURI
+from docx.opc.part import Part
 from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
 from docx.shared import Mm, Pt, RGBColor
@@ -56,6 +66,20 @@ _FAMILIES = {
     "arialbd.ttf": "Arial",
     "consola.ttf": "Consolas",
 }
+
+# Fontes embutidas no .docx. O PDF embute os TTF, então desenha igual em
+# qualquer leitor; o .docx só nomeia a família, e o Word substitui quando não
+# a tem instalada — trocada a fonte, muda a métrica de cada linha e o
+# documento inteiro reflui. Embutir é o que faz o .docx acompanhar o PDF em
+# máquina alheia.
+_FONT_CT = "application/vnd.openxmlformats-officedocument.obfuscatedFont"
+# O formato pede os 32 primeiros bytes do TTF em XOR com os bytes do fontKey
+# em ordem invertida (ECMA-376 §15.2.13). Com a chave nula a máscara é zero e
+# o XOR é identidade: o TTF cru já é um obfuscatedFont válido para qualquer
+# leitor que siga o padrão, e o Word aceita justamente essa chave. A
+# ofuscação existe para dificultar extrair fontes pagas; a DejaVu é livre
+# para redistribuir, então não há o que proteger.
+_NULL_FONT_KEY = "{00000000-0000-0000-0000-000000000000}"
 
 # Alturas fixas do slide (mm), as mesmas do deck em PDF (slides.py).
 LABEL_Y, TITLE_Y, BODY_Y, MAX_LOGO_H = 12.0, 22.0, 46.0, 62.0
@@ -186,6 +210,34 @@ def _xml(tag: str, **attrs) -> OxmlElement:
     return el
 
 
+def _font_entry(fonts_root, family: str, mono: bool = False):
+    """Nó `w:font` dessa família no fontTable, criado se ainda não existir.
+
+    Um nó novo leva os descritores que o Word grava (charset, family, pitch):
+    são eles que ele consulta para escolher o substituto quando ignora a fonte
+    embutida, e o schema os quer antes dos elementos `w:embed*`.
+    """
+    for node in fonts_root.findall(qn("w:font")):
+        if node.get(qn("w:name")) == family:
+            return node
+    node = _xml("w:font", name=family)
+    node.append(_xml("w:charset", val="00"))
+    node.append(_xml("w:family", val="modern" if mono else "swiss"))
+    node.append(_xml("w:pitch", val="fixed" if mono else "variable"))
+    fonts_root.append(node)
+    return node
+
+
+def _renderer(theme: Theme) -> Renderer | None:
+    """Renderer do PDF, usado pelo .docx só para consultar as fontes: limpar
+    os glifos que elas não desenham e medir a largura de um texto. Sem as
+    fontes do tema no disco, devolve None e cada uso cai no seu plano B."""
+    try:
+        return Renderer(theme)
+    except (FileNotFoundError, RuntimeError):
+        return None
+
+
 def _no_theme(rPr) -> None:
     """Tira os atributos de tema do rPr.
 
@@ -239,6 +291,26 @@ def _cell_border(cell, side: str, color: RGB, width_mm: float) -> None:
                         sz=max(2, round(_pt(width_mm) * 8))))
 
 
+def _cell_margins(cell, mm: float) -> None:
+    """Respiro interno da célula, em mm (o PDF usa 2 mm por célula). O OOXML
+    mede em dxa: vigésimos de ponto."""
+    dxa = round(_pt(mm) * 20)
+    tcPr = cell._tc.get_or_add_tcPr()
+    old = tcPr.find(qn("w:tcMar"))
+    if old is not None:
+        tcPr.remove(old)
+    mar = OxmlElement("w:tcMar")
+    for side in ("top", "start", "bottom", "end"):
+        mar.append(_xml(f"w:{side}", w=dxa, type="dxa"))
+    tcPr.append(mar)
+
+
+def _row_flag(row, flag: str) -> None:
+    """Liga `w:tblHeader` (repetir na quebra) ou `w:cantSplit` (não dividir)
+    numa linha de tabela."""
+    row._tr.get_or_add_trPr().append(OxmlElement(f"w:{flag}"))
+
+
 class _Word:
     """Monta o .docx com o desenho do PDF: capa escura, corpo com cabeçalho e
     rodapé, e um estilo por tipo de bloco."""
@@ -248,6 +320,9 @@ class _Word:
         self.sans = _family(theme.fonts.sans_regular)
         self.mono = _family(theme.fonts.mono_regular, "Consolas")
         self.doc = Document()
+        self._ren = _renderer(theme)
+        self._metadata()
+        self._embed_fonts()
         self._styles()
         self._cover()
         self._body_section()
@@ -259,7 +334,73 @@ class _Word:
         self.doc.save(str(out))
         return out
 
+    def clean(self, content, keep_spacing: bool = False):
+        """Mesma limpeza de glifos do PDF (builder._render_block): sem ela, um
+        emoji que a fonte não desenha é cortado no PDF e fica no .docx."""
+        if self._ren is None:
+            return content
+        return self._ren.clean_content(content, keep_spacing)
+
+    def width(self, text: str, size: float, bold: bool = False) -> float:
+        """Largura do texto em mm, medida com a fonte do tema, como o PDF mede
+        para desenhar caixas justas ao conteúdo."""
+        if self._ren is None:
+            # ponytail: largura média de 0,52 em; só vale como reserva de
+            # espaço. Com as fontes do tema instaladas, a medida é exata.
+            return len(text) * size * 0.3528 * 0.52
+        pdf = self._ren.pdf
+        pdf.set_font("DejaVu", "B" if bold else "", size)
+        return pdf.get_string_width(text)
+
     # -- estrutura ---------------------------------------------------------
+
+    def _metadata(self) -> None:
+        """Propriedades do arquivo, as mesmas do PDF (renderer._apply_metadata)."""
+        cov, props = self.t.cover, self.doc.core_properties
+        props.title = f"{cov.title} — {cov.subtitle}" if cov.subtitle else cov.title
+        props.subject = cov.tagline
+        props.author = props.last_modified_by = "doc_app"
+        props.language = "pt-BR"
+        if self.t.classification:
+            props.keywords = self.t.classification
+
+    def _embed_fonts(self) -> None:
+        """Embute os TTF do tema no pacote, para o Word não trocar a fonte.
+
+        As referências moram no `fontTable.xml` e apontam, por relação, para
+        uma parte por arquivo de fonte. Sem as fontes no disco (tema sem
+        `fonts.dir`), não há o que embutir e o documento sai como antes.
+        """
+        fonts = self.t.fonts
+        # mesma ordem que o schema do w:font espera: regular antes do negrito
+        wanted = (
+            (self.sans, fonts.sans_regular, "embedRegular"),
+            (self.sans, fonts.sans_bold, "embedBold"),
+            (self.mono, fonts.mono_regular, "embedRegular"),
+        )
+        table = self.doc.part.part_related_by(RT.FONT_TABLE)
+        root = parse_xml(table.blob)
+        embedded = 0
+        for family, filename, tag in wanted:
+            try:
+                data = Path(fonts.path(filename)).read_bytes()
+            except (FileNotFoundError, OSError):
+                continue
+            embedded += 1
+            part = Part(PackURI(f"/word/fonts/font{embedded}.odttf"), _FONT_CT,
+                        data, self.doc.part.package)
+            node = _font_entry(root, family, mono=(family == self.mono))
+            node.append(_xml(f"w:{tag}", fontKey=_NULL_FONT_KEY,
+                             subsetted="false"))
+            node[-1].set(qn("r:id"), table.relate_to(part, RT.FONT))
+        if not embedded:
+            return
+        # Part.blob não tem setter: a parte do fontTable é um Part cru, e
+        # trocar o blob é o único jeito de devolver o XML alterado ao pacote.
+        table._blob = serialize_part_xml(root)
+        # sem isso o Word descarta as fontes embutidas ao salvar de novo
+        settings = self.doc.settings.element
+        settings.insert(0, OxmlElement("w:embedTrueTypeFonts"))
 
     def _styles(self) -> None:
         typo, pal = self.t.typography, self.t.palette
@@ -298,14 +439,60 @@ class _Word:
         for name in ("List Bullet", "List Number"):
             style = self.doc.styles[name]
             style.font.name = self.sans
+            style.font.size = Pt(typo.list_size)
             style.font.color.rgb = RGBColor(*pal.ink)
             _no_theme(style.element.get_or_add_rPr())
             # recuo do PDF: marcador na margem, texto 7 mm adiante
             style.paragraph_format.left_indent = Mm(7)
             style.paragraph_format.first_line_indent = Mm(-7)
             style.paragraph_format.space_after = Pt(_pt(0.8))
+        for name in ("Header", "Footer"):
+            style = self.doc.styles[name]
+            style.font.name = self.sans
+            _no_theme(style.element.get_or_add_rPr())
+            # Os tabs destes estilos vêm medidos em Letter (centro 4680,
+            # direita 9360 twips) e, no OOXML, os tabs do parágrafo SOMAM aos
+            # do estilo em vez de substituí-los. Sem limpar, o primeiro \t
+            # para no 4680 do modelo e o texto da direita acaba no meio da
+            # página A4, em vez de na margem direita (`_tabs`).
+            style.paragraph_format.tab_stops.clear_all()
+        self._toc_styles()
         # o Word numera e atualiza o sumário sozinho ao abrir o arquivo
         self.doc.settings.element.append(_xml("w:updateFields", val="true"))
+
+    def _toc_styles(self) -> None:
+        """Estilos das linhas do sumário, com os níveis do PDF.
+
+        O modelo do python-docx não traz `TOC 1-3` nem `Hyperlink`: o Word os
+        cria na hora de montar o campo TOC, com a cara dele (Calibri Light e
+        azul). Definindo-os aqui, pelos styleId que o campo usa, o sumário sai
+        na paleta — os mesmos indent/corpo/cor/peso de `renderer.render_toc`.
+        """
+        pal = self.t.palette
+        levels = (
+            (1, 0.0, 11.0, pal.brand, True),
+            (2, 7.0, 10.0, pal.ink, False),
+            (3, 14.0, 9.0, pal.muted, False),
+        )
+        for level, indent, size, color, bold in levels:
+            style = self.doc.styles.add_style(
+                f"TOC {level}", WD_STYLE_TYPE.PARAGRAPH, builtin=True)
+            style.font.name = self.sans
+            style.font.size = Pt(size)
+            style.font.bold = bold
+            style.font.color.rgb = RGBColor(*color)
+            fmt = style.paragraph_format
+            fmt.left_indent = Mm(indent)
+            fmt.space_before = Pt(_pt(2.0 if level == 1 else 0.5))
+            fmt.space_after = Pt(0)
+            # líderes pontilhados até o número de página, como no PDF
+            fmt.tab_stops.add_tab_stop(
+                Mm(self.t.page.content_width), WD_TAB_ALIGNMENT.RIGHT,
+                WD_TAB_LEADER.DOTS)
+        link = self.doc.styles.add_style(
+            "Hyperlink", WD_STYLE_TYPE.CHARACTER, builtin=True)
+        link.font.color.rgb = RGBColor(*pal.link)
+        link.font.underline = False
 
     def _run(self, par, text: str = "", *, size: float | None = None,
              color: RGB | None = None, bold: bool = False,
@@ -381,10 +568,7 @@ class _Word:
                          pal.cover_muted, space_before=250 - 158 - _line_mm(12))
 
     def _zero_cell_margins(self, cell) -> None:
-        mar = OxmlElement("w:tcMar")
-        for side in ("top", "start", "bottom", "end"):
-            mar.append(_xml(f"w:{side}", w=0, type="dxa"))
-        cell._tc.get_or_add_tcPr().append(mar)
+        _cell_margins(cell, 0)
 
     def _cover_line(self, par, text: str, size: float, color: RGB,
                     bold: bool = False, space_before: float = 0) -> None:
@@ -404,15 +588,24 @@ class _Word:
         _border(par, "bottom", color, width_mm)
 
     def _badge(self, par, label: str) -> None:
-        """Selo de classificação, com borda, no canto superior direito."""
+        """Selo de classificação, com borda, no canto superior direito.
+
+        No PDF a caixa é um retângulo da largura do texto. Borda de parágrafo
+        no OOXML atravessa toda a coluna, então o recuo esquerdo é calculado
+        pela largura medida do rótulo — daí a caixa ficar justa como no PDF.
+        """
+        pal, page = self.t.palette, self.t.page
+        text = f"  {label.upper()}  "
+        # a caixa fica na célula da capa, que ocupa a página inteira
+        box = self.width(text, 9, bold=True) + 2 * 1.0
         par.alignment = WD_ALIGN_PARAGRAPH.RIGHT
         par.paragraph_format.space_before = Pt(_pt(18))
         par.paragraph_format.space_after = Pt(0)
-        par.paragraph_format.right_indent = Mm(self.t.page.margin)
-        self._run(par, f"  {label.upper()}  ", size=9, bold=True,
-                  color=self.t.palette.accent)
+        par.paragraph_format.right_indent = Mm(page.margin)
+        par.paragraph_format.left_indent = Mm(max(page.width - page.margin - box, 0))
+        self._run(par, text, size=9, bold=True, color=pal.accent)
         for side in ("top", "bottom", "left", "right"):
-            _border(par, side, self.t.palette.accent, 0.5, space=2)
+            _border(par, side, pal.accent, 0.5, space=2)
 
     def _page_rect(self, paragraph, x: float, y: float, w: float, h: float,
                    color: RGB) -> None:
@@ -497,8 +690,11 @@ class _Word:
         pal, page = self.t.palette, self.t.page
         par.paragraph_format.space_after = Pt(0)
         w, h = _pt(page.width * 0.75), _pt(page.height * 0.28)
+        # z-index positivo: o PDF desenha a marca no footer(), por cima do
+        # conteúdo. Atrás do texto, os fundos sólidos (cabeçalho escuro de
+        # tabela, caixa de código) a cobririam.
         style = (f"position:absolute;margin-left:0;margin-top:0;width:{w:.0f}pt;"
-                 f"height:{h:.0f}pt;rotation:315;z-index:-251658751;"
+                 f"height:{h:.0f}pt;rotation:315;z-index:251658240;"
                  "mso-position-horizontal:center;"
                  "mso-position-horizontal-relative:margin;"
                  "mso-position-vertical:center;"
@@ -545,7 +741,8 @@ class _Word:
     # -- blocos ------------------------------------------------------------
 
     def add(self, block: Block) -> None:
-        typ, content = block.type, block.content
+        typ = block.type
+        content = self.clean(block.content, keep_spacing=(typ == "code"))
         if typ in ("h1", "h2", "h3"):
             self._heading(str(content), int(typ[1]))
         elif typ == "p":
@@ -671,13 +868,17 @@ class _Word:
         table = self.doc.add_table(rows=0, cols=cols)
         table.autofit = False
         if header:
-            cells = table.add_row().cells
-            for cell, text in zip(cells, header):
+            row = table.add_row()
+            # o PDF redesenha o cabeçalho quando a tabela quebra a página
+            _row_flag(row, "tblHeader")
+            for cell, text in zip(row.cells, header):
                 _shade(cell._tc, pal.dark)
                 self._cell(cell, text, pal.white, bold=True)
-        for i, row in enumerate(rows):
-            cells = table.add_row().cells
-            for cell, text in zip(cells, row):
+        for i, data in enumerate(rows):
+            row = table.add_row()
+            # o PDF só desenha a linha se ela couber inteira na página
+            _row_flag(row, "cantSplit")
+            for cell, text in zip(row.cells, data):
                 if i % 2:
                     _shade(cell._tc, pal.zebra)
                 self._cell(cell, text, pal.ink)
@@ -685,6 +886,7 @@ class _Word:
         for row in table.rows:
             for cell, width in zip(row.cells, widths):
                 cell.width = Mm(width)
+                _cell_margins(cell, 2.0)
         self.doc.add_paragraph().paragraph_format.space_after = Pt(_pt(4))
 
     def _cell(self, cell, text: str, color: RGB, bold: bool = False) -> None:
@@ -711,10 +913,13 @@ class _Word:
         run.font.color.rgb = RGBColor(*pal.muted)
 
     def _swatches(self, items: list[dict]) -> None:
-        """Amostras em linhas de seis, como no PDF: o quadrado da cor em cima
-        e o nome com o código embaixo."""
-        pal = self.t.palette
+        """Amostras em linhas de seis, como no PDF: o quadrado da cor em cima,
+        o código em Mono na cor da marca e o nome embaixo."""
+        pal, page = self.t.palette, self.t.page
         per_row = 6
+        # mesma geometria do PDF: 3 mm entre chips, altura 0,7 da largura
+        chip_w = (page.content_width - (per_row - 1) * 3) / per_row
+        chip_h = chip_w * 0.7
         for start in range(0, len(items), per_row):
             row_items = items[start:start + per_row]
             table = self.doc.add_table(rows=2, cols=per_row)
@@ -722,22 +927,26 @@ class _Word:
             for i in range(per_row):
                 chip, label = table.rows[0].cells[i], table.rows[1].cells[i]
                 for cell in (chip, label):
-                    cell.width = Mm(self.t.page.content_width / per_row)
+                    cell.width = Mm(page.content_width / per_row)
                 if i >= len(row_items):
                     continue
                 item = row_items[i]
                 _shade(chip._tc, _hex_rgb(item["hex"]))
-                chip.paragraphs[0].paragraph_format.space_after = Pt(0)
-                chip.paragraphs[0].add_run().font.size = Pt(_pt(14))
-                name = label.paragraphs[0]
-                name.paragraph_format.space_after = Pt(0)
-                run = name.add_run(str(item.get("name", "")))
-                run.font.size, run.font.bold = Pt(8), True
-                run.font.color.rgb = RGBColor(*pal.ink)
-                code = label.add_paragraph()
+                for side in ("top", "bottom", "left", "right"):
+                    _cell_border(chip, side, pal.rule, 0.2)
+                par = chip.paragraphs[0]
+                par.paragraph_format.space_after = Pt(0)
+                par.paragraph_format.line_spacing = Pt(_pt(chip_h))
+                par.add_run().font.size = Pt(_pt(chip_h))
+                code = label.paragraphs[0]
                 code.paragraph_format.space_after = Pt(0)
-                run = code.add_run(str(item.get("hex", "")))
-                run.font.name, run.font.size = self.mono, Pt(7.5)
+                run = code.add_run(str(item.get("hex", "")).upper())
+                run.font.name, run.font.size = self.mono, Pt(7)
+                run.font.color.rgb = RGBColor(*pal.brand)
+                name = label.add_paragraph()
+                name.paragraph_format.space_after = Pt(0)
+                run = name.add_run(str(item.get("name", "")).lstrip("-$@"))
+                run.font.size = Pt(6.5)
                 run.font.color.rgb = RGBColor(*pal.muted)
             self.doc.add_paragraph().paragraph_format.space_after = Pt(_pt(3))
 

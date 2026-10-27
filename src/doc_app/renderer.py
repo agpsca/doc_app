@@ -420,7 +420,8 @@ class Renderer:
 
     def bullets(self, items, numbered=False):
         pdf, t = self.pdf, self.theme
-        pdf.set_font("DejaVu", "", 10.5)
+        size = t.typography.list_size
+        pdf.set_font("DejaVu", "", size)
         for i, it in enumerate(items, 1):
             open_item, it = self.pending(it)
             marker = f"{i}." if numbered else "•"
@@ -432,7 +433,7 @@ class Renderer:
                 pdf.set_font("DejaVu", "B", 7.5)
                 width = pdf.get_string_width("A DEFINIR") + 3
                 pdf.cell(width, 5.6, "A DEFINIR")
-                pdf.set_font("DejaVu", "", 10.5)
+                pdf.set_font("DejaVu", "", size)
                 pdf.set_x(x + 7 + width)
                 pdf.multi_cell(t.page.content_width - 7 - width, 5.6, it, align="L")
             else:

@@ -136,6 +136,7 @@ class Typography:
     h3_size: float = 11.0
     body_size: float = 10.5
     body_leading: float = 5.6  # altura de linha do parágrafo
+    list_size: float = 10.5  # corpo dos itens de lista, igual em todos os tipos
     mono_size: float = 9.0
     h1_gap_before: float = 7.0
     h2_gap_before: float = 5.0

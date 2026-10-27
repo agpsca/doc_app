@@ -4,7 +4,8 @@
 Cobre o que a opção "Voltar" promete: cada submenu (tipo de documentação,
 marca de restrição, caminho do app) volta ao menu principal sem gerar PDF, e
 o painel só termina quando o usuário escolhe Sair. Cobre também a memória do
-último app documentado (Enter repete, pasta apagada é esquecida).
+último app documentado (Enter repete, pasta apagada é esquecida) e o YAML do
+cache (criado quando falta, reaproveitado quando já existe).
 
 Uso:
     uv run python scripts/check_menu.py
@@ -27,7 +28,7 @@ from doc_app.theme import DOC_TYPES
 
 # o prompt vai para o input (que está mockado): conta pelo item impresso
 MENU = "Gerar documentação de um app"
-GERAR, CRIAR, SAIR = "1", "2", "6"
+GERAR, SAIR = "1", "5"
 VOLTAR_TIPO = str(len(DOC_TYPES) + 1)   # último item do submenu de tipos
 VOLTAR_FORMATO = str(len(FORMATS) + 1)  # 3 formatos + Voltar
 VOLTAR_MARCA = "4"                      # 3 opções de marca + Voltar
@@ -110,17 +111,18 @@ def check_last_app(app: Path) -> None:
     assert core.last_app() is None
 
 
-def check_create_editable(app: Path) -> None:
-    """A opção de criar documento editável grava o YAML e não gera PDF."""
-    text = run_panel([CRIAR, str(app), "1", "s", SAIR])
+def check_keeps_existing_yaml(app: Path) -> None:
+    """O fluxo de gerar cria o YAML quando falta e, na segunda vez, reaproveita
+    o que está no cache em vez de recriar (não perde o texto já escrito)."""
+    criar = [GERAR, str(app), "1", "1", "s", VOLTAR_MARCA, SAIR]
+    text = run_panel(criar)
     dp = core.doc_path(app.name, "brand")
     assert dp.exists(), text
     assert "Documentação criada" in text
 
-    # na segunda vez só aponta o arquivo, sem recriar (não perde o texto)
     antes = dp.read_text(encoding="utf-8")
-    text = run_panel([CRIAR, str(app), "1", SAIR])
-    assert "Já existe uma fonte editável" in text
+    text = run_panel([GERAR, str(app), "1", "1", VOLTAR_MARCA, SAIR])
+    assert "Documentação criada" not in text, text
     assert dp.read_text(encoding="utf-8") == antes
 
 
@@ -138,8 +140,9 @@ def main() -> int:
             check_back_from_mark(app)
             check_back_from_path(app)
             check_last_app(app)
-            check_create_editable(outro)
-    print("ok: menu volta e encerra, último app lembrado, YAML editável criado")
+            check_keeps_existing_yaml(outro)
+    print("ok: menu volta e encerra, último app lembrado, YAML do cache "
+          "criado e reaproveitado")
     return 0
 
 
